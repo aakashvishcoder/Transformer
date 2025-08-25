@@ -2,20 +2,19 @@
 #include <array>
 #include <iostream>
 #include <numeric>
+using namespace std;
 
 template <typename T, size_t N>
 class Tensor {
 public:
-    Tensor(const std::array<size_t, N>& shape) 
+    Tensor(const array<size_t, N>& shape) 
         : shape(shape) 
     {
-        // compute strides
         strides[N-1] = 1;
         for (int i = N-2; i >= 0; --i) {
             strides[i] = strides[i+1] * shape[i+1];
         }
 
-        // allocate storage
         size_t total_size = 1;
         for (auto s : shape) total_size *= s;
         data.resize(total_size);
@@ -24,7 +23,7 @@ public:
     template <typename... Args>
     T& operator()(Args... args) {
         static_assert(sizeof...(args) == N, "Invalid number of indices");
-        std::array<size_t, N> indices{static_cast<size_t>(args)...};
+        array<size_t, N> indices{static_cast<size_t>(args)...};
         size_t idx = 0;
         for (size_t i = 0; i < N; ++i) {
             idx += indices[i] * strides[i];
@@ -32,23 +31,69 @@ public:
         return data[idx];
     }
 
-    const std::array<size_t, N>& get_shape() const { return shape; }
+    Tensor<T,N> operator+(const Tensor<T,N>& other) const {
+        check_same_shape(other);
+        Tensor<T,N> result(shape);
+        for(size_t i = 0; i < data.size(); i++)
+            result.data[i] = data[i] + other.data[i];
+        return result;
+    }
 
+    Tensor<T,N> operator-(const Tensor<T,N>& other) const {
+        check_same_shape(other);
+        Tensor<T,N> result(shape);
+        for(size_t i = 0; i < data.size(); i++) 
+            result.data[i] = data[i] - other.data[i];
+        return result;
+    }
+
+    Tensor<T,N> operator*(const Tensor<T,N>& other) const {
+        check_same_shape(other);
+        Tensor<T,N> result(shape);
+        for(size_t i = 0; i < data.size(); i++) 
+            result.data[i] = data[i] * other.data[i];
+        return result;
+    }
+
+    Tensor<T,N> operator/(const Tensor<T,N>& other) const {
+        check_same_shape(other);
+        Tensor<T,N> result(shape);
+        for(size_t i = 0; i < data.size(); i++) 
+            result.data[i] = data[i] / other.data[i];
+        return result;
+    }
+
+    void print_flat() const {
+        for (auto x : data) cout << x << " ";
+        cout << "\n";
+    }
+
+    const array<size_t, N>& get_shape() const { return shape; }
+
+    void print_shape() {
+        cout << "Shape: [";
+        bool first = true;
+        for (auto s : get_shape()) {
+            if (!first) std::cout << ", ";
+            std::cout << s;
+            first = false;
+        }
+        cout << "]\n";
+    }
 private:
-    std::array<size_t, N> shape;
-    std::array<size_t, N> strides;
-    std::vector<T> data;
+
+    void check_same_shape(const Tensor<T,N>& other) const {
+        if (shape != other.shape)
+            throw runtime_error("Shapes do not match for element-wise operation");
+    }
+
+    array<size_t, N> shape;
+    array<size_t, N> strides;
+    vector<T> data;
 };
 
-// Example usage
 int main() {
-    Tensor<int, 3> tensor({2, 3, 4});  // 3D tensor of ints
+    Tensor<int, 3> tensor({2, 3, 4});  
 
-    tensor(1, 2, 3) = 42;  // assign value
-
-    std::cout << "Value at (1,2,3): " << tensor(1, 2, 3) << "\n";
-
-    Tensor<double, 2> tensor2({3, 3}); // 2D tensor of doubles
-    tensor2(1,1) = 3.14;
-    std::cout << "Value at (1,1): " << tensor2(1,1) << "\n";
+    tensor.print_shape();
 }
