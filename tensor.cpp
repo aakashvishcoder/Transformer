@@ -132,8 +132,96 @@ private:
     vector<T> data;
 };
 
-int main() { 
-    Tensor<float,4> t({2,3,4,5});
-    t.fill_random(0.15f, 0.69f);
-    t.print();
+template<typename T, size_t N>
+Tensor<T,N> matmul(const Tensor<T,N>& A, const Tensor<T,N>& B){
+    static_assert(N>=2,"Tensor must have at least 2 dims for matmul");
+
+    size_t M = A.get_shape()[N-2];
+    size_t K = A.get_shape()[N-1];
+    size_t K2 = B.get_shape()[N-2];
+    size_t N2 = B.get_shape()[N-1];
+    if(K != K2) throw runtime_error("Inner dimensions must match");
+
+    // Compute batch shape
+    array<size_t,N-2> batch_shape;
+    for(size_t i=0;i<N-2;++i){
+        size_t a_dim = A.get_shape()[i];
+        size_t b_dim = B.get_shape()[i];
+        if(a_dim != b_dim && a_dim != 1 && b_dim != 1)
+            throw runtime_error("Cannot broadcast batch dimensions");
+        batch_shape[i] = max(a_dim,b_dim);
+    }
+
+    // Result shape
+    array<size_t,N> result_shape;
+    for(size_t i=0;i<N-2;++i) result_shape[i] = batch_shape[i];
+    result_shape[N-2] = M;
+    result_shape[N-1] = N2;
+
+    Tensor<T,N> result(result_shape);
+
+    // Total number of batches
+    size_t total_batches = 1;
+    for(auto b: batch_shape) total_batches *= b;
+
+    array<size_t,N> a_idx;
+    array<size_t,N> b_idx;
+    array<size_t,N> r_idx;
+
+    // Loop over all batches
+    for(size_t batch=0; batch<total_batches; ++batch){
+        size_t tmp = batch;
+        array<size_t,N-2> batch_index;
+        for(int i=N-3;i>=0;--i){
+            batch_index[i] = tmp % batch_shape[i];
+            tmp /= batch_shape[i];
+        }
+
+        // Map batch indices to a_idx and b_idx
+        for(size_t i=0;i<N-2;++i){
+            a_idx[i] = (A.get_shape()[i]==1)?0:batch_index[i];
+            b_idx[i] = (B.get_shape()[i]==1)?0:batch_index[i];
+            r_idx[i] = batch_index[i];
+        }
+
+        // Standard 2D matmul on last two dims
+        for(size_t i=0;i<M;++i){
+            for(size_t j=0;j<N2;++j){
+                T sum=0;
+                for(size_t k=0;k<K;++k){
+                    a_idx[N-2]=i; a_idx[N-1]=k;
+                    b_idx[N-2]=k; b_idx[N-1]=j;
+                    sum += A(a_idx)*B(b_idx);
+                }
+                r_idx[N-2]=i; r_idx[N-1]=j;
+                result(r_idx) = sum;
+            }
+        }
+    }
+
+    return result;
+}
+
+// ----------------- Test -----------------
+int main(){
+    Tensor<float,4> A({2,3,4,5});
+    Tensor<float,4> B({2,3,5,6});
+
+    A.fill_random(0.1f,1.0f);
+    B.fill_random(0.1f,1.0f);
+
+    auto C = matmul(A,B);
+
+    A.print_shape();
+    B.print_shape();
+    C.print_shape();
+
+    cout<<"\nC[0,0,:,:] =\n";
+    for(int i=0;i<4;i++){
+        for(int j=0;j<6;j++){
+            array<size_t,4> idx = {0,0,(size_t)i,(size_t)j};
+            cout<<C(idx)<<" ";
+        }
+        cout<<"\n";
+    }
 }
