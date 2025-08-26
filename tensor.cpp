@@ -2,6 +2,7 @@
 #include <array>
 #include <iostream>
 #include <numeric>
+#include <random>
 using namespace std;
 
 template <typename T, size_t N>
@@ -80,6 +81,25 @@ public:
         }
         cout << "]\n";
     }
+
+    void print() const {
+        array<size_t, N> indices{};
+        print_recursive(0, indices);
+        cout << "\n";
+    }
+
+    void fill_random(T min = T(0), T max = T(1)) {
+        random_device rd;
+        mt19937 gen(rd());
+
+        if constexpr (is_integral<T>::value) {
+            uniform_int_distribution<T> dist(min,max);
+            for (auto&x : data) x = dist(gen);
+        } else {
+            uniform_real_distribution<T> dist(min,max);
+            for(auto& x: data) x = dist(gen);
+        }
+    }
 private:
 
     void check_same_shape(const Tensor<T,N>& other) const {
@@ -87,13 +107,33 @@ private:
             throw runtime_error("Shapes do not match for element-wise operation");
     }
 
+    private:
+    void print_recursive(size_t dim, array<size_t, N>& indices) const {
+        cout << "[";
+        for (size_t i = 0; i < shape[dim]; ++i) {
+            indices[dim] = i;
+            if (dim == N - 1) {
+                // Last dimension: print actual value
+                size_t flat_index = 0;
+                for (size_t d = 0; d < N; ++d)
+                    flat_index += indices[d] * strides[d];
+                cout << data[flat_index];
+            } else {
+                // Recurse into next dimension
+                print_recursive(dim + 1, indices);
+            }
+            if (i != shape[dim] - 1) cout << ", ";
+        }
+        cout << "]";
+    }
+
     array<size_t, N> shape;
     array<size_t, N> strides;
     vector<T> data;
 };
 
-int main() {
-    Tensor<int, 3> tensor({2, 3, 4});  
-
-    tensor.print_shape();
+int main() { 
+    Tensor<float,4> t({2,3,4,5});
+    t.fill_random(0.15f, 0.69f);
+    t.print();
 }
