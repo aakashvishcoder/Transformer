@@ -6,21 +6,21 @@ class Tensor {
 public:
     using Shape = array<size_t, N>;
 
-    Tensor(const Shape& shape)
-        : shape_(shape) {
+    Tensor(const Shape& shape_)
+        : shape__(shape_) {
         compute_strides();
         size_t total_size = 1;
-        for (auto s : shape_) total_size *= s;
+        for (auto s : shape__) total_size *= s;
         data_.resize(total_size);
     }
 
-    Tensor(const Shape& shape, const vector<T>& data)
-        : shape_(shape), data_(data) {
+    Tensor(const Shape& shape_, const vector<T>& data)
+        : shape__(shape_), data_(data) {
         compute_strides();
         size_t expected_size = 1;
-        for (auto s : shape_) expected_size *= s;
+        for (auto s : shape__) expected_size *= s;
         if (expected_size != data_.size()) {
-            throw runtime_error("Data size does not match shape");
+            throw runtime_error("Data size does not match shape_");
         }
     }
 
@@ -57,36 +57,116 @@ public:
         return data_[flat];
     }
 
+    // Addition operator - inplace
+    Tensor<T, N>& operator+=(const Tensor<T, N>& other) {
+        if (shape__ != other.shape__)
+            throw runtime_error("Dimension mismatch for addition!");
+
+        for (size_t i = 0; i < data_.size(); ++i)
+            data_[i] += other.data_[i]; 
+
+        return *this;
+    }
+
+    // Addition operator 
+    Tensor<T,N>& operator+(const Tensor<T,N>& other) {
+        if (shape__ != other.shape__)
+            throw runtime_error("Dimension mismatch for addition!");
+        Tensor<T,N> result = *this;
+        result += other;
+        return result;
+    }
+
+    // Subtraction operator - inplace
+    Tensor<T, N>& operator-=(const Tensor<T, N>& other) {
+        if (shape__ != other.shape__)
+            throw runtime_error("Dimension mismatch for addition!");
+
+        for (size_t i = 0; i < data_.size(); ++i)
+            data_[i] -= other.data_[i]; 
+
+        return *this;
+    }
+
+    // Subtraction operator 
+    Tensor<T,N>& operator-(const Tensor<T,N>& other) {
+        if (shape__ != other.shape__)
+            throw runtime_error("Dimension mismatch for addition!");
+        Tensor<T,N> result = *this;
+        result -= other;
+        return result;
+    }
+
+    // Multiplication operator - inplace
+    Tensor<T, N>& operator*=(const Tensor<T, N>& other) {
+        if (shape__ != other.shape__)
+            throw runtime_error("Dimension mismatch for addition!");
+
+        for (size_t i = 0; i < data_.size(); ++i)
+            data_[i] *= other.data_[i]; 
+
+        return *this;
+    }
+
+    // Multiplication operator 
+    Tensor<T,N>& operator*(const Tensor<T,N>& other) {
+        if (shape__ != other.shape__)
+            throw runtime_error("Dimension mismatch for addition!");
+        Tensor<T,N> result = *this;
+        result *= other;
+        return result;
+    }
+
+    // Division operator - inplace
+    Tensor<T, N>& operator/=(const Tensor<T, N>& other) {
+        if (shape__ != other.shape__)
+            throw runtime_error("Dimension mismatch for addition!");
+
+        for (size_t i = 0; i < data_.size(); ++i)
+            data_[i] /= other.data_[i]; 
+
+        return *this;
+    }
+
+    // Division operator 
+    Tensor<T,N>& operator/(const Tensor<T,N>& other) {
+        if (shape__ != other.shape__)
+            throw runtime_error("Dimension mismatch for addition!");
+        Tensor<T,N> result = *this;
+        result /= other;
+        return result;
+    }
+
     // Squeeze (remove size-1 axis)
     template<size_t Axis>
     auto squeeze() const {
         static_assert(Axis < N, "Axis out of bounds");
-        if (shape_[Axis] != 1) throw runtime_error("Cannot squeeze non-1 dimension");
+        if (shape__[Axis] != 1) throw runtime_error("Cannot squeeze non-1 dimension");
 
-        array<size_t, N - 1> new_shape{};
+        array<size_t, N - 1> new_shape_{};
         for (size_t i = 0, j = 0; i < N; i++) {
-            if (i != Axis) new_shape[j++] = shape_[i];
+            if (i != Axis) new_shape_[j++] = shape__[i];
         }
-        Tensor<T, N - 1> out(new_shape);
+        Tensor<T, N - 1> out(new_shape_);
         out.data_ = data_;
         return out;
     }
 
     // Squeeze all size-1 axes
     auto squeeze_all() const {
-        vector<size_t> new_shape_vec;
-        for (auto s : shape_) if (s != 1) new_shape_vec.push_back(s);
-        if (new_shape_vec.empty()) new_shape_vec.push_back(1);
+        vector<size_t> new_shape__vec;
+        for (auto s : shape__) if (s != 1) new_shape__vec.push_back(s);
+        if (new_shape__vec.empty()) new_shape__vec.push_back(1);
 
         constexpr size_t M = 1; // default
-        size_t M_actual = new_shape_vec.size();
+        size_t M_actual = new_shape__vec.size();
 
         // Dynamic squeeze result
         if (M_actual == N) return *this;
         else if (M_actual == N - 1) {
-            array<size_t, N - 1> new_shape{};
-            for (size_t i = 0; i < N - 1; i++) new_shape[i] = new_shape_vec[i];
-            Tensor<T, N - 1> out(new_shape);
+            array<size_t, N - 1> new_shape_{};
+            for (size_t i = 0; i < N - 1; i++) new_shape_[i] = new_shape__vec[i];
+            Tensor<T, N - 1> out(new_shape_);
             out.data_ = data_;
             return out;
         } else {
@@ -98,12 +178,12 @@ public:
     template<size_t Axis>
     auto unsqueeze() const {
         static_assert(Axis <= N, "Axis out of bounds");
-        array<size_t, N + 1> new_shape{};
+        array<size_t, N + 1> new_shape_{};
         for (size_t i = 0, j = 0; i < N + 1; i++) {
-            if (i == Axis) new_shape[i] = 1;
-            else new_shape[i] = shape_[j++];
+            if (i == Axis) new_shape_[i] = 1;
+            else new_shape_[i] = shape__[j++];
         }
-        Tensor<T, N + 1> out(new_shape);
+        Tensor<T, N + 1> out(new_shape_);
         out.data_ = data_;
         return out;
     }
@@ -112,11 +192,11 @@ public:
     template<size_t Axis>
     auto sum_axis() const {
         static_assert(Axis < N, "Axis out of bounds");
-        array<size_t, N - 1> new_shape{};
+        array<size_t, N - 1> new_shape_{};
         for (size_t i = 0, j = 0; i < N; i++) {
-            if (i != Axis) new_shape[j++] = shape_[i];
+            if (i != Axis) new_shape_[j++] = shape__[i];
         }
-        Tensor<T, N - 1> out(new_shape);
+        Tensor<T, N - 1> out(new_shape_);
         fill(out.data_.begin(), out.data_.end(), T(0));
 
         array<size_t, N> indices{};
@@ -124,14 +204,16 @@ public:
         return out;
     }
 
-    auto get_shape() const {
-        return shape_;
+    // Shape of the tensor
+    auto get_shape_() const {
+        return shape__;
     }
 
-    void print_shape() {
+    // Print tensor shape_
+    void print_shape_() {
         cout << "[";
         for(size_t i = 0; i < N; i++) {
-            cout << shape_[i];
+            cout << shape__[i];
             if(i != N-1) cout << ", ";
         }
         cout << ']';
@@ -139,7 +221,7 @@ public:
 
 private:
     vector<T> data_;
-    Shape shape_;
+    Shape shape__;
     Shape strides_;
 
     template<typename U, size_t M>
@@ -149,13 +231,13 @@ private:
         size_t acc = 1;
         for (int i = N - 1; i >= 0; i--) {
             strides_[i] = acc;
-            acc *= shape_[i];
+            acc *= shape__[i];
         }
     }
 
     void print_recursive(size_t dim, array<size_t, N>& indices) const {
         cout << "[";
-        for (size_t i = 0; i < shape_[dim]; i++) {
+        for (size_t i = 0; i < shape__[dim]; i++) {
             indices[dim] = i;
             if (dim == N - 1) {
                 size_t flat = 0;
@@ -164,7 +246,7 @@ private:
             } else {
                 print_recursive(dim + 1, indices);
             }
-            if (i != shape_[dim] - 1) cout << ", ";
+            if (i != shape__[dim] - 1) cout << ", ";
         }
         cout << "]";
     }
@@ -183,7 +265,7 @@ private:
             for (size_t i = 0; i < N; i++) flat_in += idx[i] * strides_[i];
             out.data_[flat_out] += data_[flat_in];
         } else {
-            for (size_t i = 0; i < shape_[D]; i++) {
+            for (size_t i = 0; i < shape__[D]; i++) {
                 idx[D] = i;
                 recurse_sum_axis<Axis, D + 1>(out, idx);
             }
@@ -195,33 +277,33 @@ template<typename T, size_t N>
 Tensor<T,N> matmul(const Tensor<T,N>& A, const Tensor<T,N>& B){
     static_assert(N>=2,"Tensor must have at least 2 dims for matmul");
 
-    size_t M = A.get_shape()[N-2];
-    size_t K = A.get_shape()[N-1];
-    size_t K2 = B.get_shape()[N-2];
-    size_t N2 = B.get_shape()[N-1];
+    size_t M = A.get_shape_()[N-2];
+    size_t K = A.get_shape_()[N-1];
+    size_t K2 = B.get_shape_()[N-2];
+    size_t N2 = B.get_shape_()[N-1];
     if(K != K2) throw runtime_error("Inner dimensions must match");
 
-    // Compute batch shape
-    array<size_t,N-2> batch_shape;
+    // Compute batch shape_
+    array<size_t,N-2> batch_shape_;
     for(size_t i=0;i<N-2;++i){
-        size_t a_dim = A.get_shape()[i];
-        size_t b_dim = B.get_shape()[i];
+        size_t a_dim = A.get_shape_()[i];
+        size_t b_dim = B.get_shape_()[i];
         if(a_dim != b_dim && a_dim != 1 && b_dim != 1)
             throw runtime_error("Cannot broadcast batch dimensions");
-        batch_shape[i] = max(a_dim,b_dim);
+        batch_shape_[i] = max(a_dim,b_dim);
     }
 
-    // Result shape
-    array<size_t,N> result_shape;
-    for(size_t i=0;i<N-2;++i) result_shape[i] = batch_shape[i];
-    result_shape[N-2] = M;
-    result_shape[N-1] = N2;
+    // Result shape_
+    array<size_t,N> result_shape_;
+    for(size_t i=0;i<N-2;++i) result_shape_[i] = batch_shape_[i];
+    result_shape_[N-2] = M;
+    result_shape_[N-1] = N2;
 
-    Tensor<T,N> result(result_shape);
+    Tensor<T,N> result(result_shape_);
 
     // Total number of batches
     size_t total_batches = 1;
-    for(auto b: batch_shape) total_batches *= b;
+    for(auto b: batch_shape_) total_batches *= b;
 
     array<size_t,N> a_idx;
     array<size_t,N> b_idx;
@@ -232,14 +314,14 @@ Tensor<T,N> matmul(const Tensor<T,N>& A, const Tensor<T,N>& B){
         size_t tmp = batch;
         array<size_t,N-2> batch_index;
         for(int i=N-3;i>=0;--i){
-            batch_index[i] = tmp % batch_shape[i];
-            tmp /= batch_shape[i];
+            batch_index[i] = tmp % batch_shape_[i];
+            tmp /= batch_shape_[i];
         }
 
         // Map batch indices to a_idx and b_idx
         for(size_t i=0;i<N-2;++i){
-            a_idx[i] = (A.get_shape()[i]==1)?0:batch_index[i];
-            b_idx[i] = (B.get_shape()[i]==1)?0:batch_index[i];
+            a_idx[i] = (A.get_shape_()[i]==1)?0:batch_index[i];
+            b_idx[i] = (B.get_shape_()[i]==1)?0:batch_index[i];
             r_idx[i] = batch_index[i];
         }
 
@@ -276,7 +358,7 @@ int main() {
     cout << "Unsqueezed at axis 2: ";
     C.print();
 
-    // Squeeze (only works if shape has 1)
+    // Squeeze (only works if shape_ has 1)
     Tensor<float, 3> D({2, 1, 3}, {1,2,3,4,5,6});
     cout << "Original D: ";
     D.print();
@@ -310,6 +392,15 @@ int main() {
 
     auto mult = matmul(a,b);
     mult.print();
-    mult.print_shape();
+    mult.print_shape_();
+
+    cout << "\nOperations : " << endl;
+    Tensor<float,3> test({2,3,4});
+    Tensor<float,3> test1({2,3,4});
+    test.fill_random();
+    test1.fill_random();
+    test+=test1;
+    test.print();
+
     return 0;
 }
