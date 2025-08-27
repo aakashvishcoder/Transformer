@@ -40,6 +40,10 @@ public:
     Shape& get_shape_ref() { return shape__; }
     Shape& get_strides_ref() { return strides_; }
 
+    const vector<T>& get_data_ref() const { return data_; }
+    const Shape& get_shape_ref() const { return shape__; }
+    const Shape& get_strides_ref() const { return strides_; }
+
     // Print
     void print() const {
         array<size_t, N> idx{};
@@ -64,12 +68,21 @@ public:
     void fill_random(T min_val = T(0), T max_val = T(1)) {
         random_device rd;
         mt19937 gen(rd());
-        if constexpr (is_integral<T>::value) {
-            uniform_int_distribution<T> dist(min_val, max_val);
-            for (auto& v : data_) v = dist(gen);
-        } else {
+
+        if constexpr (is_floating_point_v<T>) {
+            // Floating point: uniform_real_distribution
             uniform_real_distribution<T> dist(min_val, max_val);
-            for (auto& v : data_) v = dist(gen);
+            for (auto& x : data_) x = dist(gen);
+        } else if constexpr (is_integral_v<T>) {
+            // Integer: use signed type to handle negative ranges
+            using signed_type = make_signed_t<T>;
+            uniform_int_distribution<signed_type> dist(
+                static_cast<signed_type>(min_val),
+                static_cast<signed_type>(max_val)
+            );
+            for (auto& x : data_) x = dist(gen);
+        } else {
+            static_assert(is_arithmetic_v<T>, "fill_random requires numeric type");
         }
     }
 
@@ -143,36 +156,70 @@ public:
         return result;
     }
 
+    Tensor<T,N> operator-() const {
+        Tensor<T,N> result(shape__);           
+        const auto& in = data_;
+        auto& out = result.get_data_ref();
+        for (size_t i = 0; i < in.size(); i++)
+            out[i] = -in[i];                  
+        return result;
+    }
+
     Tensor<T,N> sqrt() const {
         Tensor<T,N> result(shape__);
         const auto& in_data = get_data_ref();
         auto& out_data = result.get_data_ref();
         for(size_t i = 0; i < in_data.size(); i++) {
-            out_data[i] = sqrt(in_data[i]);
+            out_data[i] = std::sqrt(in_data[i]);
         }
         return result;
     }
 
     Tensor<T,N> exp() const {
         Tensor<T,N> result(shape__);
-        const auto& in_data = get_data_ref();
-        auto& out_data = result.get_data_ref();
-        for(size_t i =0; i < in_data.size(); i++) {
-            out_data = exp(in_data[i]);
+        const auto& in_data = get_data_ref(); // calls const version
+        auto& out_data = result.get_data_ref(); // non-const for writing
+        for (size_t i = 0; i < in_data.size(); i++) {
+            out_data[i] = std::exp(in_data[i]);
         }
         return result;
     }
 
-    // Arithmetic with scalar
-    Tensor<T,N>& operator+=(T num) { for (auto &v : data_) v += num; return *this; }
-    Tensor<T,N>& operator-=(T num) { for (auto &v : data_) v -= num; return *this; }
-    Tensor<T,N>& operator*=(T num) { for (auto &v : data_) v *= num; return *this; }
-    Tensor<T,N>& operator/=(T num) { for (auto &v : data_) v /= num; return *this; }
+    Tensor<T,N> exp_() {
+        for(auto &v : data_) v = std::exp(v);
+        return *this;
+    }
 
-    Tensor<T,N> operator+(T num) const { Tensor<T,N> r = *this; r += num; return r; }
-    Tensor<T,N> operator-(T num) const { Tensor<T,N> r = *this; r -= num; return r; }
-    Tensor<T,N> operator*(T num) const { Tensor<T,N> r = *this; r *= num; return r; }
-    Tensor<T,N> operator/(T num) const { Tensor<T,N> r = *this; r /= num; return r; }
+    Tensor<T,N> sqrt_() {
+        for(auto &v : data_) v = std::sqrt(v);
+        return *this;
+    }
+
+    // Arithmetic with scalar
+    Tensor<T,N>& operator+=(T scalar) { 
+        for(auto &v : data_) v += scalar; 
+        return *this; 
+    }
+
+    Tensor<T,N>& operator-=(T scalar) { 
+        for(auto &v : data_) v -= scalar; 
+        return *this; 
+    }
+
+    Tensor<T,N>& operator*=(T scalar) { 
+        for(auto &v : data_) v *= scalar; 
+        return *this; 
+    }
+
+    Tensor<T,N>& operator/=(T scalar) { 
+        for(auto &v : data_) v /= scalar; 
+        return *this; 
+    }
+
+    Tensor<T,N> operator+(T scalar) const { Tensor<T,N> r = *this; r += scalar; return r; }
+    Tensor<T,N> operator-(T scalar) const { Tensor<T,N> r = *this; r -= scalar; return r; }
+    Tensor<T,N> operator*(T scalar) const { Tensor<T,N> r = *this; r *= scalar; return r; }
+    Tensor<T,N> operator/(T scalar) const { Tensor<T,N> r = *this; r /= scalar; return r; }
 
     // Sum along axis
     Tensor<T,N-1> sum_axis(size_t axis) const {
@@ -466,5 +513,36 @@ Tensor<T, N> matmul(const Tensor<T, N>& A, const Tensor<T, N>& B) {
         }
     }
 
+    return result;
+}
+
+// Global scalar operators
+template<typename T, size_t N>
+Tensor<T,N> operator+(T scalar, const Tensor<T,N>& tensor) {
+    return tensor + scalar;
+}
+
+template<typename T, size_t N>
+Tensor<T,N> operator-(T scalar, const Tensor<T,N>& tensor) {
+    Tensor<T,N> result(tensor.get_shape());
+    const auto& data = tensor.get_data_ref();
+    auto& out = result.get_data_ref();
+    for (size_t i = 0; i < data.size(); ++i)
+        out[i] = scalar - data[i];
+    return result;
+}
+
+template<typename T, size_t N>
+Tensor<T,N> operator*(T scalar, const Tensor<T,N>& tensor) {
+    return tensor * scalar;
+}
+
+template<typename T, size_t N>
+Tensor<T,N> operator/(T scalar, const Tensor<T,N>& tensor) {
+    Tensor<T,N> result(tensor.get_shape());
+    const auto& data = tensor.get_data_ref();
+    auto& out = result.get_data_ref();
+    for (size_t i = 0; i < data.size(); ++i)
+        out[i] = scalar / data[i];
     return result;
 }

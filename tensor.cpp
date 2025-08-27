@@ -1,4 +1,5 @@
 #include "tensor.hpp"
+#include "functions.hpp"
 #include <iostream>
 using namespace std;
 
@@ -88,5 +89,55 @@ int main() {
     
     auto max = dan.max_axis(2);
     max.print();
+    cout << "test2 : " << endl;
+    Tensor<float, 3> test2({2,3,4});
+    test2.fill_random(-1.0f, 1.0f);
+    test2.print();
+    cout << "\nActivations : " << endl;
+    cout << "ReLU: " << endl;
+    Activations::ReLU(test2);
+    test2.print();
+    
+    cout << "\ntest2 : " << endl;
+    test2.fill_random(-1.0f, 1.0f);
+    test2.print();
+    cout << "Leaky ReLU: " << endl;
+    Activations::LeakyReLU(test2,1e-2f);
+    test2.print();
+
+    cout << "\ntest2 : " << endl;
+    test2.fill_random(-1.0f, 1.0f);
+    test2.print();
+    cout << "Leaky ReLU: " << endl;
+    Activations::LeakyReLU(test2,1e-2f);
+    test2.print();
+
+    cout << "\ntest2 : " << endl;
+    test2.fill_random(-1.0f, 1.0f);
+    test2.print();
+    cout << "Softmax: " << endl;
+    auto t3 = Activations::Softmax(test2,2);
+    t3.print();
+
+    // cout << "\ntest2 : " << endl;
+    // test2.fill_random(-1.0f, 1.0f);
+    // test2.print();
+    // cout << "Sigmoid: " << endl;
+    // t3 = Activations::Sigmoid(test2);
+    // t3.print();
+
+    // cout << "\ntest2 : " << endl;
+    // test2.fill_random(-1.0f, 1.0f);
+    // test2.print();
+    // cout << "TanH: " << endl;
+    // t3 = Activations::Tanh(test2);
+    // t3.print();
+    Tensor<float,3> t7({2,3,4});
+    t7.fill_random(1,100);
+    t7.print();
+
+    t7=-t7;
+    t7.exp_();
+    t7.print();
     return 0;
 }
