@@ -119,19 +119,19 @@ int main() {
     auto t3 = Activations::Softmax(test2,2);
     t3.print();
 
-    // cout << "\ntest2 : " << endl;
-    // test2.fill_random(-1.0f, 1.0f);
-    // test2.print();
-    // cout << "Sigmoid: " << endl;
-    // t3 = Activations::Sigmoid(test2);
-    // t3.print();
+    cout << "\ntest2 : " << endl;
+    test2.fill_random(-1.0f, 1.0f);
+    test2.print();
+    cout << "Sigmoid: " << endl;
+    t3 = Activations::Sigmoid(test2);
+    t3.print();
 
-    // cout << "\ntest2 : " << endl;
-    // test2.fill_random(-1.0f, 1.0f);
-    // test2.print();
-    // cout << "TanH: " << endl;
-    // t3 = Activations::Tanh(test2);
-    // t3.print();
+    cout << "\ntest2 : " << endl;
+    test2.fill_random(-1.0f, 1.0f);
+    test2.print();
+    cout << "TanH: " << endl;
+    t3 = Activations::Tanh(test2);
+    t3.print();
     Tensor<float,3> t7({2,3,4});
     t7.fill_random(1,100);
     t7.print();

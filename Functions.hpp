@@ -46,23 +46,11 @@ struct Activations {
     // Sigmoid, returns new tensor
     template<typename T, size_t N>
     static Tensor<T,N> Sigmoid(const Tensor<T,N>& X) {
-        Tensor<T,N> result(X.get_shape());
-        const auto& in = X.get_data_ref();
-        auto& out = result.get_data_ref();
-        for (size_t i = 0; i < in.size(); i++) {
-            out[i] = T(1) / (T(1) + std::exp(-in[i]));
-        }
-        return result;
+        return T(1)/(T(1) + (-X).exp());
     }
 
     template<typename T, size_t N>
     static Tensor<T,N> Tanh(const Tensor<T,N>& X) {
-        Tensor<T,N> result(X.get_shape());
-        const auto& in = X.get_data_ref();
-        auto& out = result.get_data_ref();
-        for (size_t i = 0; i < in.size(); i++) {
-            out[i] = std::tanh(in[i]);  // Or: 2*sigmoid(2x) - 1
-        }
-        return result;
+        return (T(2)*Sigmoid(T(2)*X)+T(1));
     }
 };
