@@ -44,6 +44,19 @@ public:
         }
     }
 
+    void ones() {
+        for(auto& v : data_) v = T(1);
+    }
+
+    void zeros() {
+        for(auto& v : data_) v = T(0);
+    }
+
+    void fill_value(T val = T(0)) {
+        if(val == 0) { zeros(); return; }
+        for(auto& v : data_) v = val;
+    }
+
     // Access
     T& operator()(const array<size_t, N>& idx) {
         size_t flat = 0;
@@ -137,6 +150,72 @@ public:
         return result;
     }
 
+    // Integer operators
+
+    // Addition 
+    Tensor<T,N> operator+(const T num) const {
+        Tensor<T,N> result = *this;  
+        for(size_t i = 0; i < result.data_.size(); i++) {
+            result.data_[i] += num;
+        }
+        return result;
+    }
+
+    Tensor<T,N>& operator+=(const T num) {
+        for(size_t i = 0; i < data_.size(); i++) {
+            data_[i] += num;
+        }
+        return *this;
+    }
+
+    // Subtraction
+    Tensor<T,N> operator-(const T num) const {
+        Tensor<T,N> result = *this;  
+        for(size_t i = 0; i < result.data_.size(); i++) {
+            result.data_[i] -= num;
+        }
+        return result;
+    }
+
+    Tensor<T,N>& operator-=(const T num) {
+        for(size_t i = 0; i < data_.size(); i++) {
+            data_[i] -= num;
+        }
+        return *this;
+    }
+
+    // Multiplication
+    Tensor<T,N> operator*(const T num) const {
+        Tensor<T,N> result = *this;  
+        for(size_t i = 0; i < result.data_.size(); i++) {
+            result.data_[i] *= num;
+        }
+        return result;
+    }
+
+    Tensor<T,N>& operator*=(const T num) {
+        for(size_t i = 0; i < data_.size(); i++) {
+            data_[i] *= num;
+        }
+        return *this;
+    }
+
+    // Division
+    Tensor<T,N> operator/(const T num) const {
+        Tensor<T,N> result = *this;  
+        for(size_t i = 0; i < result.data_.size(); i++) {
+            result.data_[i] /= num;
+        }
+        return result;
+    }
+
+    Tensor<T,N>& operator/=(const T num) {
+        for(size_t i = 0; i < data_.size(); i++) {
+            data_[i] /= num;
+        }
+        return *this;
+    }
+
     // Squeeze (remove size-1 axis)
     template<size_t Axis>
     auto squeeze() const {
@@ -186,6 +265,29 @@ public:
         Tensor<T, N + 1> out(new_shape_);
         out.data_ = data_;
         return out;
+    }
+
+    // Sum
+    auto sum() const {
+        T Total = T(0);
+        for(const auto &x : data_) Total+=x;
+        return Total;
+    }
+
+    // Mean 
+    auto mean() const {
+        T sum = sum();
+        return sum/T(data_.size());
+    }
+
+    // Max 
+    auto max() const {
+        return T(*max_element(data_.begin(),data_.end()));
+    }
+
+    // Min 
+    auto min() const {
+        return T(*min_element(data_.begin(),data_.end()));
     }
 
     // Sum along axis
@@ -393,13 +495,18 @@ int main() {
     auto mult = matmul(a,b);
     mult.print();
     mult.print_shape_();
+    cout << "\nStats :"  << endl;
+    cout << mult.max() << endl;
 
     cout << "\nOperations : " << endl;
     Tensor<float,3> test({2,3,4});
     Tensor<float,3> test1({2,3,4});
-    test.fill_random();
-    test1.fill_random();
+    test.fill_value(2);
+    test1.fill_value(4);
     test+=test1;
+    test.print();
+
+    test+=3;
     test.print();
 
     return 0;
