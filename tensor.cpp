@@ -80,5 +80,11 @@ int main() {
     cout << "\nTranspose : " << endl;
     T2.print_shape();
     T2.print();
+
+    Tensor<float, 3> dan({2,3,4});
+    dan.fill_random();
+    auto sum = dan.sum_axis(2);
+    sum.print();
+    
     return 0;
 }

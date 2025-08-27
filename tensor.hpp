@@ -179,6 +179,36 @@ public:
         return out;
     }
 
+    template<size_t M>
+    std::vector<T> broadcast_from(
+        const Tensor<T, M>& src,
+        size_t reduced_axis) const
+    {
+        static_assert(M == N - 1, "Source tensor must have one less dimension");
+        std::vector<T> result(data_.size()); // Same size as this tensor
+        const auto& src_data = src.get_data_ref();
+        const auto& src_strides = src.get_strides();
+
+        for (size_t flat = 0; flat < result.size(); ++flat) {
+            size_t rem = flat;
+            std::array<size_t, N> idx{};
+            for (int d = N - 1; d >= 0; --d) {
+                idx[d] = rem % shape__[d];
+                rem /= shape__[d];
+            }
+
+            size_t flat_src = 0;
+            for (size_t d = 0, j = 0; d < N; ++d) {
+                if (d == reduced_axis) continue;
+                flat_src += idx[d] * src_strides[j++];
+            }
+
+            result[flat] = src_data[flat_src];
+        }
+
+        return result;
+    }
+
     Tensor<T,N-1> mean_axis(size_t axis) const {
         Tensor<T,N-1> s = sum_axis(axis);
         T div = T(shape__[axis]);
@@ -229,6 +259,42 @@ public:
         return out;
     }
 
+    Tensor<T, N> broadcast_to(const std::array<size_t, N>& target_shape) const {
+        // Validate shape compatibility
+        for (size_t i = 0; i < N; ++i) {
+            if (shape__[i] != target_shape[i] && shape__[i] != 1) {
+                throw std::runtime_error("Shapes are not broadcast compatible");
+            }
+        }
+
+        Tensor<T, N> out(target_shape);
+        auto& out_data = out.get_data_ref();
+
+        const auto& src_data = data_;
+        const auto& src_strides = get_strides();
+
+        // Fill data by repeating values as per broadcasting
+        for (size_t flat = 0; flat < out_data.size(); ++flat) {
+            size_t rem = flat;
+            std::array<size_t, N> idx{};
+            for (int d = N - 1; d >= 0; --d) {
+                idx[d] = rem % target_shape[d];
+                rem /= target_shape[d];
+            }
+
+            // Map target index to source index (respect broadcasted dims)
+            size_t flat_src = 0;
+            for (size_t d = 0; d < N; ++d) {
+                size_t src_idx = (shape__[d] == 1) ? 0 : idx[d];
+                flat_src += src_idx * src_strides[d];
+            }
+
+            out_data[flat] = src_data[flat_src];
+        }
+
+        return out;
+    }
+
 private:
     vector<T> data_;
     Shape shape__;
@@ -259,53 +325,73 @@ private:
 
 // Matmul
 template<typename T, size_t N>
-Tensor<T,N> matmul(const Tensor<T,N>& A, const Tensor<T,N>& B) {
-    static_assert(N >= 2, "Tensor must have at least 2 dims for matmul");
-    size_t M  = A.get_shape()[N-2];
-    size_t K  = A.get_shape()[N-1];
-    size_t K2 = B.get_shape()[N-2];
-    size_t N2 = B.get_shape()[N-1];
-    if(K!=K2) throw runtime_error("Inner dimensions must match");
+Tensor<T, N> matmul(const Tensor<T, N>& A, const Tensor<T, N>& B) {
+    static_assert(N >= 2, "Tensor must have at least 2 dimensions");
 
-    array<size_t,N-2> batch_shape;
-    for(size_t i=0;i<N-2;i++){
-        size_t a_dim=A.get_shape()[i], b_dim=B.get_shape()[i];
-        if(a_dim!=b_dim && a_dim!=1 && b_dim!=1) throw runtime_error("Cannot broadcast batch dims");
-        batch_shape[i]=max(a_dim,b_dim);
+    size_t M  = A.get_shape()[N - 2];
+    size_t K  = A.get_shape()[N - 1];
+    size_t K2 = B.get_shape()[N - 2];
+    size_t N2 = B.get_shape()[N - 1];
+    if (K != K2) throw std::runtime_error("Inner dimensions must match");
+
+    // Compute batch shape
+    std::array<size_t, N - 2> batch_shape;
+    for (size_t i = 0; i < N - 2; i++) {
+        size_t a_dim = A.get_shape()[i], b_dim = B.get_shape()[i];
+        if (a_dim != b_dim && a_dim != 1 && b_dim != 1) {
+            throw std::runtime_error("Cannot broadcast batch dims");
+        }
+        batch_shape[i] = std::max(a_dim, b_dim);
     }
 
-    array<size_t,N> result_shape;
-    for(size_t i=0;i<N-2;i++) result_shape[i]=batch_shape[i];
-    result_shape[N-2]=M; result_shape[N-1]=N2;
-    Tensor<T,N> result(result_shape);
+    // Full target shapes for A and B
+    std::array<size_t, N> a_target_shape;
+    std::array<size_t, N> b_target_shape;
+    for (size_t i = 0; i < N - 2; i++) {
+        a_target_shape[i] = batch_shape[i];
+        b_target_shape[i] = batch_shape[i];
+    }
+    a_target_shape[N - 2] = M;  a_target_shape[N - 1] = K;
+    b_target_shape[N - 2] = K;  b_target_shape[N - 1] = N2;
 
+    // Broadcast A and B
+    Tensor<T, N> A_bcast = A.broadcast_to(a_target_shape);
+    Tensor<T, N> B_bcast = B.broadcast_to(b_target_shape);
+
+    // Result shape
+    std::array<size_t, N> result_shape;
+    for (size_t i = 0; i < N - 2; i++) result_shape[i] = batch_shape[i];
+    result_shape[N - 2] = M; result_shape[N - 1] = N2;
+    Tensor<T, N> result(result_shape);
+
+    // Compute sizes
     size_t total_batches = 1;
-    for(auto b: batch_shape) total_batches *= b;
+    for (auto b : batch_shape) total_batches *= b;
 
-    array<size_t,N> a_idx,b_idx,r_idx;
-    for(size_t batch=0; batch<total_batches; batch++){
-        size_t tmp=batch;
-        array<size_t,N-2> batch_index;
-        for(int i=N-3;i>=0;i--){ batch_index[i]=tmp%batch_shape[i]; tmp/=batch_shape[i]; }
+    size_t batch_size_A = M * K;
+    size_t batch_size_B = K * N2;
+    size_t batch_size_R = M * N2;
 
-        for(size_t i=0;i<N-2;i++){
-            a_idx[i]=(A.get_shape()[i]==1)?0:batch_index[i];
-            b_idx[i]=(B.get_shape()[i]==1)?0:batch_index[i];
-            r_idx[i]=batch_index[i];
-        }
+    auto& a_data = A_bcast.get_data_ref();
+    auto& b_data = B_bcast.get_data_ref();
+    auto& r_data = result.get_data_ref();
 
-        for(size_t i=0;i<M;i++){
-            for(size_t j=0;j<N2;j++){
-                T sum=0;
-                for(size_t k=0;k<K;k++){
-                    a_idx[N-2]=i; a_idx[N-1]=k;
-                    b_idx[N-2]=k; b_idx[N-1]=j;
-                    sum+=A(a_idx)*B(b_idx);
+    for (size_t batch = 0; batch < total_batches; ++batch) {
+        size_t a_offset = batch * batch_size_A;
+        size_t b_offset = batch * batch_size_B;
+        size_t r_offset = batch * batch_size_R;
+
+        for (size_t i = 0; i < M; ++i) {
+            for (size_t j = 0; j < N2; ++j) {
+                T sum = 0;
+                for (size_t k = 0; k < K; ++k) {
+                    sum += a_data[a_offset + i * K + k] *
+                           b_data[b_offset + k * N2 + j];
                 }
-                r_idx[N-2]=i; r_idx[N-1]=j;
-                result(r_idx)=sum;
+                r_data[r_offset + i * N2 + j] = sum;
             }
         }
     }
+
     return result;
 }
