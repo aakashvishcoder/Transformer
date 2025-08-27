@@ -143,6 +143,26 @@ public:
         return result;
     }
 
+    Tensor<T,N> sqrt() const {
+        Tensor<T,N> result(shape__);
+        const auto& in_data = get_data_ref();
+        auto& out_data = result.get_data_ref();
+        for(size_t i = 0; i < in_data.size(); i++) {
+            out_data[i] = sqrt(in_data[i]);
+        }
+        return result;
+    }
+
+    Tensor<T,N> exp() const {
+        Tensor<T,N> result(shape__);
+        const auto& in_data = get_data_ref();
+        auto& out_data = result.get_data_ref();
+        for(size_t i =0; i < in_data.size(); i++) {
+            out_data = exp(in_data[i]);
+        }
+        return result;
+    }
+
     // Arithmetic with scalar
     Tensor<T,N>& operator+=(T num) { for (auto &v : data_) v += num; return *this; }
     Tensor<T,N>& operator-=(T num) { for (auto &v : data_) v -= num; return *this; }
