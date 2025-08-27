@@ -179,19 +179,72 @@ public:
         return out;
     }
 
+    // Max in an axis
+    Tensor<T, N-1> max_axis(size_t axis) const {
+        if (axis >= N) throw runtime_error("Axis out of bounds");
+
+        // Compute new shape for output tensor
+        array<size_t, N-1> new_shape{};
+        size_t j = 0;
+        for (size_t i = 0; i < N; i++) {
+            if (i != axis) new_shape[j++] = shape__[i];
+        }
+
+        Tensor<T, N-1> out(new_shape);
+
+        // Initialize with the smallest possible value for type T
+        fill(out.get_data_ref().begin(), out.get_data_ref().end(),
+                numeric_limits<T>::lowest());
+
+        array<size_t, N> idx{};
+        array<size_t, N-1> out_idx{};
+
+        // Loop through all elements in the original tensor
+        for (size_t flat = 0; flat < data_.size(); flat++) {
+            // Convert flat index -> N-dimensional index
+            size_t rem = flat;
+            for (int d = N - 1; d >= 0; d--) {
+                idx[d] = rem % shape__[d];
+                rem /= shape__[d];
+            }
+
+            // Build reduced index by skipping 'axis'
+            size_t k = 0;
+            for (size_t i = 0; i < N; i++) {
+                if (i != axis) out_idx[k++] = idx[i];
+            }
+
+            // Compute flat index in reduced tensor
+            size_t flat_out = 0;
+            for (size_t d = 0; d < N - 1; d++) {
+                flat_out += out_idx[d] * out.get_strides()[d];
+            }
+
+            // Update max
+            T value = data_[flat];
+            T &current_max = out.get_data_ref()[flat_out];
+            if (value > current_max) {
+                current_max = value;
+            }
+        }
+
+        return out;
+    }
+
+
     template<size_t M>
-    std::vector<T> broadcast_from(
+    vector<T> broadcast_from(
         const Tensor<T, M>& src,
         size_t reduced_axis) const
     {
         static_assert(M == N - 1, "Source tensor must have one less dimension");
-        std::vector<T> result(data_.size()); // Same size as this tensor
+        vector<T> result(data_.size()); // Same size as this tensor
         const auto& src_data = src.get_data_ref();
         const auto& src_strides = src.get_strides();
 
         for (size_t flat = 0; flat < result.size(); ++flat) {
             size_t rem = flat;
-            std::array<size_t, N> idx{};
+            array<size_t, N> idx{};
             for (int d = N - 1; d >= 0; --d) {
                 idx[d] = rem % shape__[d];
                 rem /= shape__[d];
@@ -259,11 +312,11 @@ public:
         return out;
     }
 
-    Tensor<T, N> broadcast_to(const std::array<size_t, N>& target_shape) const {
+    Tensor<T, N> broadcast_to(const array<size_t, N>& target_shape) const {
         // Validate shape compatibility
         for (size_t i = 0; i < N; ++i) {
             if (shape__[i] != target_shape[i] && shape__[i] != 1) {
-                throw std::runtime_error("Shapes are not broadcast compatible");
+                throw runtime_error("Shapes are not broadcast compatible");
             }
         }
 
@@ -276,7 +329,7 @@ public:
         // Fill data by repeating values as per broadcasting
         for (size_t flat = 0; flat < out_data.size(); ++flat) {
             size_t rem = flat;
-            std::array<size_t, N> idx{};
+            array<size_t, N> idx{};
             for (int d = N - 1; d >= 0; --d) {
                 idx[d] = rem % target_shape[d];
                 rem /= target_shape[d];
@@ -332,21 +385,21 @@ Tensor<T, N> matmul(const Tensor<T, N>& A, const Tensor<T, N>& B) {
     size_t K  = A.get_shape()[N - 1];
     size_t K2 = B.get_shape()[N - 2];
     size_t N2 = B.get_shape()[N - 1];
-    if (K != K2) throw std::runtime_error("Inner dimensions must match");
+    if (K != K2) throw runtime_error("Inner dimensions must match");
 
     // Compute batch shape
-    std::array<size_t, N - 2> batch_shape;
+    array<size_t, N - 2> batch_shape;
     for (size_t i = 0; i < N - 2; i++) {
         size_t a_dim = A.get_shape()[i], b_dim = B.get_shape()[i];
         if (a_dim != b_dim && a_dim != 1 && b_dim != 1) {
-            throw std::runtime_error("Cannot broadcast batch dims");
+            throw runtime_error("Cannot broadcast batch dims");
         }
-        batch_shape[i] = std::max(a_dim, b_dim);
+        batch_shape[i] = max(a_dim, b_dim);
     }
 
     // Full target shapes for A and B
-    std::array<size_t, N> a_target_shape;
-    std::array<size_t, N> b_target_shape;
+    array<size_t, N> a_target_shape;
+    array<size_t, N> b_target_shape;
     for (size_t i = 0; i < N - 2; i++) {
         a_target_shape[i] = batch_shape[i];
         b_target_shape[i] = batch_shape[i];
@@ -359,7 +412,7 @@ Tensor<T, N> matmul(const Tensor<T, N>& A, const Tensor<T, N>& B) {
     Tensor<T, N> B_bcast = B.broadcast_to(b_target_shape);
 
     // Result shape
-    std::array<size_t, N> result_shape;
+    array<size_t, N> result_shape;
     for (size_t i = 0; i < N - 2; i++) result_shape[i] = batch_shape[i];
     result_shape[N - 2] = M; result_shape[N - 1] = N2;
     Tensor<T, N> result(result_shape);

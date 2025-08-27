@@ -86,5 +86,7 @@ int main() {
     auto sum = dan.sum_axis(2);
     sum.print();
     
+    auto max = dan.max_axis(2);
+    max.print();
     return 0;
 }

@@ -19,6 +19,4 @@ public:
             data[i] = (data[i]>other)?data[i]:other;
         }
     }
-
-    
 };
