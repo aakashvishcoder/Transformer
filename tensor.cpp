@@ -1,5 +1,6 @@
 #include "tensor.hpp"
-#include "functions.hpp"
+#include "activations.hpp"
+#include "loss_functions.hpp"
 #include <iostream>
 using namespace std;
 
@@ -139,5 +140,17 @@ int main() {
     t7=-t7;
     t7.exp_();
     t7.print();
+
+    Tensor<float,3> dummy({2,3,4});
+    Tensor<float,3> dummy1({2,3,4});
+    dummy.fill_random(-1.0f, 1.0f);
+    dummy1.fill_random(-1.0f, 1.0f);
+    float loss = LossFunctions::MSE(dummy,dummy1);
+    cout << "\nMSE : " << loss << endl;
+
+    dummy.fill_random(-1.0f, 1.0f);
+    dummy1.fill_random(-1.0f, 1.0f);
+    loss = LossFunctions::RMSE(dummy,dummy1);
+    cout << "RMSE : " << loss << endl;
     return 0;
 }

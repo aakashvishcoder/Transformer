@@ -60,6 +60,11 @@ public:
         cout << "]\n";
     }
 
+    // Sum
+    auto sum() const {
+        return accumulate(data_.begin(), data_.end(), 0);
+    }   
+
     // Fill
     void fill_value(T val = T(0)) { for (auto& v : data_) v = val; }
     void ones() { fill_value(T(1)); }
@@ -216,10 +221,18 @@ public:
         return *this; 
     }
 
+    Tensor<T,N>& operator^=(T scalar) {
+        for (auto& v : data_) {
+            v = std::pow(v, scalar);  // element-wise power
+        }
+        return *this;
+    }
+
     Tensor<T,N> operator+(T scalar) const { Tensor<T,N> r = *this; r += scalar; return r; }
     Tensor<T,N> operator-(T scalar) const { Tensor<T,N> r = *this; r -= scalar; return r; }
     Tensor<T,N> operator*(T scalar) const { Tensor<T,N> r = *this; r *= scalar; return r; }
     Tensor<T,N> operator/(T scalar) const { Tensor<T,N> r = *this; r /= scalar; return r; }
+    Tensor<T,N> operator^(T scalar) const { Tensor<T,N> r = *this; r ^= scalar; return r; }
 
     // Sum along axis
     Tensor<T,N-1> sum_axis(size_t axis) const {
@@ -297,7 +310,6 @@ public:
 
         return out;
     }
-
 
     template<size_t M>
     vector<T> broadcast_from(
