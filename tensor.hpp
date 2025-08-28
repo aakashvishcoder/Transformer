@@ -91,6 +91,13 @@ public:
         }
     }
 
+    void clip(T min_val = T(1e-10), T max_val = T(1-1e-10)) {
+        for(auto& v : data_) {
+            if (v < min_val) v = min_val;
+            else if (v > max_val) v = max_val;
+        }
+    }
+
     // Access operators
     T& operator()(const array<size_t, N>& idx) {
         size_t flat = 0;
@@ -190,6 +197,16 @@ public:
         return result;
     }
 
+    Tensor<T,N> log() const {
+        Tensor<T,N> result(shape__);
+        const auto& in_data = get_data_ref(); // calls const version
+        auto& out_data = result.get_data_ref(); // non-const for writing
+        for (size_t i = 0; i < in_data.size(); i++) {
+            out_data[i] = std::log(in_data[i]);
+        }
+        return result;
+    }
+
     Tensor<T,N> exp_() {
         for(auto &v : data_) v = std::exp(v);
         return *this;
@@ -197,6 +214,11 @@ public:
 
     Tensor<T,N> sqrt_() {
         for(auto &v : data_) v = std::sqrt(v);
+        return *this;
+    }
+
+    Tensor<T,N> log_() {
+        for(auto& v: data_) v = std::log(v);
         return *this;
     }
 

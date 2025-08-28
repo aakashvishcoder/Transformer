@@ -145,12 +145,24 @@ int main() {
     Tensor<float,3> dummy1({2,3,4});
     dummy.fill_random(-1.0f, 1.0f);
     dummy1.fill_random(-1.0f, 1.0f);
+    cout <<"\nDummy :"<<endl;
+    dummy.print();
+    cout <<"\nDummy1 :"<<endl;
+    dummy1.print();
     float loss = LossFunctions::MSE(dummy,dummy1);
     cout << "\nMSE : " << loss << endl;
 
-    dummy.fill_random(-1.0f, 1.0f);
-    dummy1.fill_random(-1.0f, 1.0f);
     loss = LossFunctions::RMSE(dummy,dummy1);
     cout << "RMSE : " << loss << endl;
+
+    dummy.fill_random(0.0f, 1.0f);
+    dummy1.fill_random(0.0f, 1.0f);
+    loss = LossFunctions::BCE(dummy,dummy1);
+    cout << "BCE : " << loss << endl;
+
+    dummy.fill_random(0,3);
+    dummy1.fill_random(0,3);
+    loss = LossFunctions::CE(dummy,dummy1);
+    cout << "CE : " << loss << endl;
     return 0;
 }
