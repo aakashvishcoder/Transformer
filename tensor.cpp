@@ -2,6 +2,7 @@
 #include "activations.hpp"
 #include "loss_functions.hpp"
 #include "dataframe.hpp"
+#include "layers.hpp"
 #include <iostream>
 using namespace std;
 
@@ -166,11 +167,11 @@ int main() {
     // loss = LossFunctions::CE(dummy,dummy1);
     // cout << "CE : " << loss << endl;
 
+    Tensor<float, 3> input({2, 3, 4}); // batch=2, timesteps=3, features=4
+    Dense<float> layer(4, 5);        // output_features=5
 
-    DataFrame df;
-    df.read_csv("data.csv");   // reads CSV
-    df.print();                // prints
-    auto age_column = df["age"];           // access column by name
+    Tensor<float, 3> output = layer.forward(input); 
+    // output shape = {2, 3, 5}
 
     return 0;
 }

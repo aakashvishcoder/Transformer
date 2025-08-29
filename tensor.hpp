@@ -478,76 +478,46 @@ private:
 };
 
 // Matmul
-template<typename T, size_t N>
-Tensor<T, N> matmul(const Tensor<T, N>& A, const Tensor<T, N>& B) {
-    static_assert(N >= 2, "Tensor must have at least 2 dimensions");
-
-    size_t M  = A.get_shape()[N - 2];
-    size_t K  = A.get_shape()[N - 1];
-    size_t K2 = B.get_shape()[N - 2];
-    size_t N2 = B.get_shape()[N - 1];
-    if (K != K2) throw runtime_error("Inner dimensions must match");
-
-    // Compute batch shape
-    array<size_t, N - 2> batch_shape;
-    for (size_t i = 0; i < N - 2; i++) {
-        size_t a_dim = A.get_shape()[i], b_dim = B.get_shape()[i];
-        if (a_dim != b_dim && a_dim != 1 && b_dim != 1) {
-            throw runtime_error("Cannot broadcast batch dims");
-        }
-        batch_shape[i] = max(a_dim, b_dim);
+template <typename T, size_t NA, size_t NB>
+Tensor<T, (NA + NB - 2)> dot(const Tensor<T, NA>& A, const Tensor<T, NB>& B) {
+    // Dimension check
+    size_t a_last = A.get_shape()[NA - 1];
+    size_t b_first = B.get_shape()[0];
+    if (a_last != b_first) {
+        throw std::runtime_error("dot: dimension mismatch");
     }
 
-    // Full target shapes for A and B
-    array<size_t, N> a_target_shape;
-    array<size_t, N> b_target_shape;
-    for (size_t i = 0; i < N - 2; i++) {
-        a_target_shape[i] = batch_shape[i];
-        b_target_shape[i] = batch_shape[i];
+    // Build output shape = A.shape[:-1] + B.shape[1:]
+    std::array<size_t, NA + NB - 2> out_shape{};
+    for (size_t i = 0; i < NA - 1; i++) {
+        out_shape[i] = A.get_shape()[i];
     }
-    a_target_shape[N - 2] = M;  a_target_shape[N - 1] = K;
-    b_target_shape[N - 2] = K;  b_target_shape[N - 1] = N2;
+    for (size_t j = 1; j < NB; j++) {
+        out_shape[NA - 1 + j - 1] = B.get_shape()[j];
+    }
 
-    // Broadcast A and B
-    Tensor<T, N> A_bcast = A.broadcast_to(a_target_shape);
-    Tensor<T, N> B_bcast = B.broadcast_to(b_target_shape);
+    Tensor<T, NA + NB - 2> out(out_shape);
 
-    // Result shape
-    array<size_t, N> result_shape;
-    for (size_t i = 0; i < N - 2; i++) result_shape[i] = batch_shape[i];
-    result_shape[N - 2] = M; result_shape[N - 1] = N2;
-    Tensor<T, N> result(result_shape);
+    // Flattened sizes
+    size_t left = A.size() / a_last;            // product of A.shape[:-1]
+    size_t right = B.size() / b_first;          // product of B.shape[1:]
 
-    // Compute sizes
-    size_t total_batches = 1;
-    for (auto b : batch_shape) total_batches *= b;
+    const T* a_ptr = A.data();
+    const T* b_ptr = B.data();
+    T* o_ptr = out.data();
 
-    size_t batch_size_A = M * K;
-    size_t batch_size_B = K * N2;
-    size_t batch_size_R = M * N2;
-
-    auto& a_data = A_bcast.get_data_ref();
-    auto& b_data = B_bcast.get_data_ref();
-    auto& r_data = result.get_data_ref();
-
-    for (size_t batch = 0; batch < total_batches; ++batch) {
-        size_t a_offset = batch * batch_size_A;
-        size_t b_offset = batch * batch_size_B;
-        size_t r_offset = batch * batch_size_R;
-
-        for (size_t i = 0; i < M; ++i) {
-            for (size_t j = 0; j < N2; ++j) {
-                T sum = 0;
-                for (size_t k = 0; k < K; ++k) {
-                    sum += a_data[a_offset + i * K + k] *
-                           b_data[b_offset + k * N2 + j];
-                }
-                r_data[r_offset + i * N2 + j] = sum;
+    // Multiply
+    for (size_t i = 0; i < left; i++) {
+        for (size_t j = 0; j < right; j++) {
+            T sum = 0;
+            for (size_t k = 0; k < a_last; k++) {
+                sum += a_ptr[i * a_last + k] * b_ptr[k * right + j];
             }
+            o_ptr[i * right + j] = sum;
         }
     }
 
-    return result;
+    return out;
 }
 
 // Global scalar operators
