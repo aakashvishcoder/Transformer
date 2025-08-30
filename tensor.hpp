@@ -413,33 +413,32 @@ public:
         return out;
     }
 
-    Tensor<T, N> broadcast_to(const array<size_t, N>& target_shape) const {
-        // Validate shape compatibility
-        for (size_t i = 0; i < N; ++i) {
-            if (shape__[i] != target_shape[i] && shape__[i] != 1) {
-                throw runtime_error("Shapes are not broadcast compatible");
-            }
-        }
+    // In Tensor<T,N>
+    template<size_t OutRank>
+    Tensor<T, OutRank> broadcast_to(const array<size_t, OutRank>& target_shape) const {
+        static_assert(OutRank >= N, "Output rank must be >= tensor rank");
 
-        Tensor<T, N> out(target_shape);
+        // Build broadcast shape with prepended 1s for new dimensions
+        array<size_t, OutRank> b_shape{};
+        for (size_t i = 0; i < OutRank - N; ++i) b_shape[i] = 1;
+        for (size_t i = 0; i < N; ++i) b_shape[OutRank - N + i] = shape__[i];
+
+        Tensor<T, OutRank> out(target_shape);
+        const auto& src_data = data_;
+        const auto& src_strides = strides_;
         auto& out_data = out.get_data_ref();
 
-        const auto& src_data = data_;
-        const auto& src_strides = get_strides();
-
-        // Fill data by repeating values as per broadcasting
         for (size_t flat = 0; flat < out_data.size(); ++flat) {
             size_t rem = flat;
-            array<size_t, N> idx{};
-            for (int d = N - 1; d >= 0; --d) {
+            array<size_t, OutRank> idx{};
+            for (int d = OutRank - 1; d >= 0; --d) {
                 idx[d] = rem % target_shape[d];
                 rem /= target_shape[d];
             }
 
-            // Map target index to source index (respect broadcasted dims)
             size_t flat_src = 0;
             for (size_t d = 0; d < N; ++d) {
-                size_t src_idx = (shape__[d] == 1) ? 0 : idx[d];
+                size_t src_idx = (shape__[d] == 1) ? 0 : idx[OutRank - N + d];
                 flat_src += src_idx * src_strides[d];
             }
 
@@ -448,6 +447,11 @@ public:
 
         return out;
     }
+
+    size_t size() const { return data_.size(); }
+
+    const T* data() const { return data_.data(); }
+    T* data() { return data_.data(); }
 
 private:
     vector<T> data_;
@@ -475,46 +479,99 @@ private:
         }
         cout << "]";
     }
+
+    // Utility to multiply elements in a vector slice
+    static size_t product(const vector<size_t>& v, size_t start, size_t end) {
+        size_t p = 1;
+        for (size_t i = start; i < end; i++) p *= v[i];
+        return p;
+    }
 };
 
-// Matmul
-template <typename T, size_t NA, size_t NB>
-Tensor<T, (NA + NB - 2)> dot(const Tensor<T, NA>& A, const Tensor<T, NB>& B) {
-    // Dimension check
-    size_t a_last = A.get_shape()[NA - 1];
-    size_t b_first = B.get_shape()[0];
-    if (a_last != b_first) {
-        throw std::runtime_error("dot: dimension mismatch");
+template<typename T, size_t NA, size_t NB>
+auto dot(const Tensor<T, NA>& A, const Tensor<T, NB>& B) {
+    // Determine batch rank: any dimensions before last two in A or B
+    constexpr size_t batch_rank = (NA > 2) ? NA - 2 : 0;
+    constexpr size_t batch_rank_B = (NB > 2) ? NB - 2 : 0;
+    constexpr size_t max_batch_rank = (batch_rank > batch_rank_B) ? batch_rank : batch_rank_B;
+    constexpr size_t OUT_RANK = max_batch_rank + 2;
+
+    const auto& A_shape = A.get_shape();
+    const auto& B_shape = B.get_shape();
+
+    std::array<size_t, OUT_RANK> out_shape{};
+
+    // Compute broadcasted batch dimensions
+    for(size_t i = 0; i < max_batch_rank; i++){
+        size_t a_dim = (i < batch_rank) ? A_shape[i] : 1;
+        size_t b_dim = (i < batch_rank_B) ? B_shape[i] : 1;
+        if(a_dim != 1 && b_dim != 1 && a_dim != b_dim)
+            throw std::runtime_error("Incompatible batch dims in dot()");
+        out_shape[i] = std::max(a_dim, b_dim);
     }
 
-    // Build output shape = A.shape[:-1] + B.shape[1:]
-    std::array<size_t, NA + NB - 2> out_shape{};
-    for (size_t i = 0; i < NA - 1; i++) {
-        out_shape[i] = A.get_shape()[i];
-    }
-    for (size_t j = 1; j < NB; j++) {
-        out_shape[NA - 1 + j - 1] = B.get_shape()[j];
-    }
+    // Last two dimensions: matmul
+    size_t A_rows = (NA >= 2) ? A_shape[NA-2] : 1;
+    size_t A_cols = (NA >= 1) ? A_shape[NA-1] : 1;
+    size_t B_rows = (NB >= 2) ? B_shape[NB-2] : 1;
+    size_t B_cols = (NB >= 1) ? B_shape[NB-1] : 1;
 
-    Tensor<T, NA + NB - 2> out(out_shape);
+    if(A_cols != B_rows)
+        throw std::runtime_error("Inner dimensions do not match for dot product");
 
-    // Flattened sizes
-    size_t left = A.size() / a_last;            // product of A.shape[:-1]
-    size_t right = B.size() / b_first;          // product of B.shape[1:]
+    out_shape[OUT_RANK-2] = A_rows;
+    out_shape[OUT_RANK-1] = B_cols;
 
-    const T* a_ptr = A.data();
-    const T* b_ptr = B.data();
-    T* o_ptr = out.data();
+    Tensor<T, OUT_RANK> out(out_shape);
 
-    // Multiply
-    for (size_t i = 0; i < left; i++) {
-        for (size_t j = 0; j < right; j++) {
-            T sum = 0;
-            for (size_t k = 0; k < a_last; k++) {
-                sum += a_ptr[i * a_last + k] * b_ptr[k * right + j];
-            }
-            o_ptr[i * right + j] = sum;
+    const auto& A_data = A.get_data_ref();
+    const auto& B_data = B.get_data_ref();
+    auto& out_data = out.get_data_ref();
+
+    const auto& A_strides = A.get_strides();
+    const auto& B_strides = B.get_strides();
+    const auto& out_strides = out.get_strides();
+
+    size_t total = out.size();
+    for(size_t idx = 0; idx < total; idx++){
+        std::vector<size_t> idx_multi(OUT_RANK);
+        size_t tmp = idx;
+        for(int i=int(OUT_RANK)-1; i>=0; i--){
+            idx_multi[i] = tmp % out_shape[i];
+            tmp /= out_shape[i];
         }
+
+        T sum = 0;
+        for(size_t k = 0; k < A_cols; k++){
+            // Compute offset for A
+            size_t a_offset = 0;
+            for(size_t i = 0; i < batch_rank; i++){
+                size_t ix = (i < batch_rank) ? idx_multi[i] : 0;
+                if(A_shape[i]==1) ix = 0;
+                a_offset += ix * A_strides[i];
+            }
+            if(NA >= 2) a_offset += idx_multi[max_batch_rank] * A_strides[NA-2];
+            if(NA >= 1) a_offset += k * A_strides[NA-1];
+
+            // Compute offset for B
+            size_t b_offset = 0;
+            for(size_t i = 0; i < batch_rank_B; i++){
+                size_t ix = (i < batch_rank_B) ? idx_multi[i] : 0;
+                if(B_shape[i]==1) ix = 0;
+                b_offset += ix * B_strides[i];
+            }
+            if(NB >= 2) b_offset += k * B_strides[NB-2];
+            if(NB >= 1) b_offset += idx_multi[max_batch_rank+1] * B_strides[NB-1];
+
+            sum += A_data[a_offset] * B_data[b_offset];
+        }
+
+        // Compute output offset
+        size_t out_offset = 0;
+        for(size_t i = 0; i < OUT_RANK; i++)
+            out_offset += idx_multi[i] * out_strides[i];
+
+        out_data[out_offset] = sum;
     }
 
     return out;
