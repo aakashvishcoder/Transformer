@@ -172,7 +172,7 @@ int main() {
 
     Dense<float> layer(4, 5);     // input features=4, output features=5
     auto output = layer.forward(input);
-
+    cout << endl;
     output.print();              // should print: [2,3,5]
 
     // output shape = {2, 3, 5}
@@ -182,13 +182,23 @@ int main() {
     l.fill_random(-1.0f,1.0f);
     m.fill_random(-1.0f,1.0f);
     auto p = dot(l, m);           // (3,5)
+    cout << endl;
     p.print();
     Tensor<float, 3> X({2, 3, 4}); // (2,3,4)
     Tensor<float, 2> W({4, 6});    // (4,6)
     X.fill_random(-1.0f,1.0f);
     W.fill_random(-1.0f,1.0f);
     auto Y = dot(X, W);            // (2,3,6)
-    Y.print();
+    cout << endl;
+    Y.print_shape();
+
+    auto Z = Y.std_axis(2);
+    cout << endl;
+    Z.print();
+
+    Z = Y.mean_axis(2);
+    cout << endl;
+    Z.print();
 
     return 0;
 }

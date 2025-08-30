@@ -363,12 +363,93 @@ public:
         return result;
     }
 
-    Tensor<T,N-1> mean_axis(size_t axis) const {
-        Tensor<T,N-1> s = sum_axis(axis);
-        T div = T(shape__[axis]);
-        for(auto &v : s.get_data_ref()) v /= div;
-        return s;
+    // Compute mean along a given axis, but broadcast to original shape
+    Tensor<T, N> mean_axis(size_t axis) const {
+        if (axis >= N) throw std::runtime_error("Axis out of bounds");
+
+        Tensor<T, N> out(shape__);       // same shape as input
+        std::fill(out.get_data_ref().begin(), out.get_data_ref().end(), T(0));
+
+        // Temporary sum along axis
+        for (size_t flat = 0; flat < data_.size(); flat++) {
+            // unravel flat index
+            size_t rem = flat;
+            std::array<size_t, N> idx{};
+            for (int d = N - 1; d >= 0; --d) {
+                idx[d] = rem % shape__[d];
+                rem /= shape__[d];
+            }
+
+            // Compute flat index ignoring axis
+            size_t flat_out = 0;
+            for (size_t d = 0; d < N; ++d) {
+                size_t ix = (d == axis) ? 0 : idx[d]; // always 0 along reduced axis
+                flat_out += ix * out.get_strides()[d];
+            }
+
+            out.get_data_ref()[flat_out] += data_[flat];
+        }
+
+        // Divide by number of elements along the axis
+        T divisor = T(shape__[axis]);
+        for (size_t flat = 0; flat < out.get_data_ref().size(); ++flat)
+            out.get_data_ref()[flat] /= divisor;
+
+        // Broadcast along axis
+        for (size_t flat = 0; flat < data_.size(); ++flat) {
+            size_t rem = flat;
+            std::array<size_t, N> idx{};
+            for (int d = N - 1; d >= 0; --d) {
+                idx[d] = rem % shape__[d];
+                rem /= shape__[d];
+            }
+
+            size_t flat_mean = 0;
+            for (size_t d = 0; d < N; ++d) {
+                size_t ix = (d == axis) ? 0 : idx[d];
+                flat_mean += ix * out.get_strides()[d];
+            }
+
+            out.get_data_ref()[flat] = out.get_data_ref()[flat_mean];
+        }
+
+        return out;
     }
+
+    // Standard deviation along axis, broadcasted
+    Tensor<T, N> std_axis(size_t axis) const {
+        Tensor<T, N> mean = mean_axis(axis);
+        Tensor<T, N> out(shape__);
+        std::fill(out.get_data_ref().begin(), out.get_data_ref().end(), T(0));
+
+        // Accumulate squared deviations
+        for (size_t i = 0; i < data_.size(); ++i) {
+            T diff = data_[i] - mean.get_data_ref()[i];
+            out.get_data_ref()[i] = diff * diff;
+        }
+
+        // Sum along axis
+        std::array<size_t, N> idx{};
+        for (size_t flat = 0; flat < out.get_data_ref().size(); ++flat) {
+            size_t rem = flat;
+            for (int d = N - 1; d >= 0; --d) {
+                idx[d] = rem % shape__[d];
+                rem /= shape__[d];
+            }
+        }
+
+        // Divide by number of elements along axis
+        T divisor = T(shape__[axis]);
+        for (size_t i = 0; i < out.get_data_ref().size(); ++i)
+            out.get_data_ref()[i] /= divisor;
+
+        // Take sqrt
+        for (size_t i = 0; i < out.get_data_ref().size(); ++i)
+            out.get_data_ref()[i] = std::sqrt(out.get_data_ref()[i]);
+
+        return out;
+    }
+
 
     // Squeeze / Unsqueeze
     Tensor<T,N-1> squeeze(size_t axis) const {
