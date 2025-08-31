@@ -208,5 +208,7 @@ int main() {
     LayerNormalization<float,3> ln(TST.get_shape_ref()[2], TST.get_shape_ref());
     auto out = ln.forward(TST);
     out.print();
+
+    
     return 0;
 }

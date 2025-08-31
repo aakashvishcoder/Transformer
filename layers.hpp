@@ -1,3 +1,8 @@
+#pragma once
+#include "tensor.hpp"
+#include "activations.hpp"
+using namespace std;
+
 template<typename T>
 class Dense {
 public:
@@ -55,11 +60,33 @@ public:
 };
 
 template <typename T>
-class MultiHeadAttentionLayer {
+class ScaledDotProductAttention {
 public:
-    size_t model_dim;
-    size_t num_heads;
-    size_t head_dim;
+    template <size_t NA>
+    pair<Tensor<T,NA>, Tensor<T,NA>> forward(
+        const Tensor<T,NA>& queries,
+        const Tensor<T,NA>& keys,
+        const Tensor<T,NA>& values,
+        const optional<Tensor<T,NA>>& mask = std::nullopt
+    ) {
+        // 1. QK^T
+        auto matmul = dot(queries, keys.transpose({-1,-2}));
+        
+        // Scaling (d_k)
+        size_t d_k = keys.get_shape()[-1];
+        T scale = static_cast<T>(sqrt(static_cast<double>(d_k)));
+        auto scaled_logits = matmul / scale;
 
-    
+        if(mask) {
+            scaled_logits += (*mask * static_cast<T>(-1e9));
+        }
+
+        // Softmax
+        auto attention_weights = Activations::Softmax(scaled_logits, scaled_logits.get_shape()[-1]);
+
+        // Weighted sum of values
+        auto output = dot(attention_weights, values);
+
+        return make_pair(output,attention_weights);
+    }
 };
