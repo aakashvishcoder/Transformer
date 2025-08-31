@@ -54,12 +54,3 @@ public:
     }
 };
 
-template <typename T>
-class MultiHeadAttentionLayer {
-public:
-    size_t model_dim;
-    size_t num_heads;
-    size_t head_dim;
-
-    
-};
