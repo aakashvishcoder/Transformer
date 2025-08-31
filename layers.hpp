@@ -5,25 +5,75 @@
 
 using namespace std;
 
+
 template<typename T>
 class Dense {
 public:
-    Tensor<T, 2> weight_;
-    Tensor<T, 1> bias_;
+    Tensor<T, 2> weight_; // [in_features, out_features]
+    Tensor<T, 1> bias_;   // [out_features]
 
     Dense(size_t in_features, size_t out_features)
-        : weight_({in_features, out_features}), bias_({out_features})
-    {
+        : weight_({in_features, out_features}), bias_({out_features}) {
         weight_.fill_random(-0.1, 0.1);
-        bias_.fill_value(T(0));
+        bias_.zeros();
     }
 
+    // Forward for N-dim tensor: apply matmul along last axis
     template<size_t N>
     Tensor<T, N> forward(const Tensor<T, N>& input) const {
-        // input: rank N (e.g., 2 or 3)
-        auto output = dot(input, weight_);  // output has same rank as input
-        output += bias_.broadcast_to(output.get_shape()); // broadcast bias
-        return output;  // rank is dynamic, matches dot result
+        const auto& in_shape = input.get_shape_ref();
+        if (in_shape[N-1] != weight_.get_shape_ref()[0])
+            throw std::runtime_error("Input last dim does not match weight rows");
+
+        // Output shape: same as input, last dim = weight cols
+        auto out_shape = in_shape;
+        out_shape[N-1] = weight_.get_shape_ref()[1];
+        Tensor<T, N> output(out_shape);
+
+        const auto& in_data = input.get_data_ref();
+        const auto& w_data = weight_.get_data_ref();
+        const auto& w_shape = weight_.get_shape_ref();
+        auto& out_data = output.get_data_ref();
+        const size_t batch_size = input.size() / in_shape[N-1];
+        const size_t in_features = w_shape[0];
+        const size_t out_features = w_shape[1];
+
+        for (size_t b = 0; b < batch_size; ++b) {
+            for (size_t o = 0; o < out_features; ++o) {
+                T sum = 0;
+                for (size_t i = 0; i < in_features; ++i) {
+                    sum += in_data[b * in_features + i] * w_data[i * out_features + o];
+                }
+                out_data[b * out_features + o] = sum + bias_.get_data_ref()[o];
+            }
+        }
+
+        return output;
+    }
+};
+
+template<typename T>
+class FeedForward {
+public:
+    Dense<T> fc1;
+    Dense<T> fc2;
+
+    FeedForward(size_t embed_dim, size_t hidden_dim)
+        : fc1(embed_dim, hidden_dim), fc2(hidden_dim, embed_dim) {}
+
+    template<size_t N>
+    Tensor<T,N> forward(const Tensor<T,N>& x) {
+        auto out = fc1.forward(x);
+
+        // ReLU activation
+        Tensor<T,N> relu_out(out.get_shape_ref());
+        const auto& in_data = out.get_data_ref();
+        auto& relu_data = relu_out.get_data_ref();
+        for (size_t i = 0; i < in_data.size(); ++i)
+            relu_data[i] = std::max(in_data[i], T(0));
+
+        out = fc2.forward(relu_out);
+        return out;
     }
 };
 
@@ -43,21 +93,29 @@ public:
         : epsilon(1e-5), gamma(), beta()
     {
         Shape param_shape = input_shape;
-        param_shape[N-1] = param_dim;  // last dimension = param_dim
-        gamma = Tensor<T, N>(param_shape);
-        gamma.fill_value(T(1));        // default ones
-        beta = Tensor<T, N>(param_shape);
-        beta.fill_value(T(0));         // default zeros
+        // Make gamma and beta the same shape as input
+        gamma = Tensor<T, N>(input_shape);
+        gamma.fill_value(T(1));
+        beta = Tensor<T, N>(input_shape);
+        beta.fill_value(T(0));
     }
 
     template<size_t NA>
     Tensor<T, NA> forward(const Tensor<T, NA>& input) {
-        // mean and std along last axis
-        auto mean = input.mean_axis(N-1);
-        auto stddev = input.std_axis(N-1);
+        auto mean = input.mean_axis(N-1);       // shape reduced along last axis
+        auto stddev = input.std_axis(N-1);      // same
 
-        auto normalized = (input - mean) / (stddev + epsilon);
-        return normalized * gamma + beta;
+        // broadcast mean and stddev to input shape
+        auto mean_b = mean.broadcast_to(input.get_shape_ref());
+        auto std_b  = stddev.broadcast_to(input.get_shape_ref());
+
+        auto normalized = (input - mean_b) / (std_b + epsilon);
+
+        // broadcast gamma and beta if needed
+        auto gamma_b = gamma.broadcast_to(input.get_shape_ref());
+        auto beta_b  = beta.broadcast_to(input.get_shape_ref());
+
+        return normalized * gamma_b + beta_b;
     }
 };
 
@@ -125,7 +183,7 @@ public:
         const Tensor<T, M>& keys,
         const Tensor<T, M>& values
     ) {
-        std::vector<Tensor<T, M>> head_outputs;
+        vector<Tensor<T, M>> head_outputs;
 
         for (size_t i = 0; i < num_heads; i++) {
             auto q = wq[i].forward(queries);
@@ -144,4 +202,6 @@ public:
         return wo.forward(concat);
     }
 };
+
+
 

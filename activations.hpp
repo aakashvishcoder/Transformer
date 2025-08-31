@@ -6,15 +6,18 @@
 struct Activations {
     // In-place ReLU
     template<typename T, size_t N>
-    static void ReLU(Tensor<T,N>& X) {
+    static Tensor<T,N> ReLU(Tensor<T,N>& X) {
+        Tensor<T,N> result(X.get_shape_ref());
         auto& data = X.get_data_ref();
+        auto& result_data = result.get_data_ref();
         for (size_t i = 0; i < data.size(); ++i)
-            data[i] = (data[i] > T(0)) ? data[i] : T(0);
+            result_data[i] = (data[i] > T(0)) ? data[i] : T(0);
+        return result;
     }
 
     // In-place LeakyReLU
     template<typename T, size_t N>
-    static void LeakyReLU(Tensor<T,N>& X, T alpha = T(0.01)) {
+    static Tensor<T,N> LeakyReLU(Tensor<T,N>& X, T alpha = T(0.01)) {
         auto& data = X.get_data_ref();
         for (size_t i = 0; i < data.size(); ++i)
             data[i] = (data[i] > T(0)) ? data[i] : alpha * data[i];

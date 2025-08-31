@@ -156,10 +156,17 @@ public:
     }
 
     Tensor<T,N>& operator*=(const Tensor<T,N>& other) {
-        if (shape__ != other.shape__)
-            throw runtime_error("Dimension mismatch for multiplication!");
-        for (size_t i = 0; i < data_.size(); i++)
-            data_[i] *= other.data_[i];
+        for(size_t flat = 0; flat < data_.size(); ++flat) {
+            // convert flat to multi-index
+            array<size_t,N> idx{};
+            size_t rem = flat;
+            for(int d=N-1; d>=0; --d){
+                idx[d] = rem % shape__[d];
+                rem /= shape__[d];
+            }
+            size_t other_flat = other.flat_index_broadcast(idx, other);
+            data_[flat] *= other.get_data_ref()[other_flat];
+        }
         return *this;
     }
 
@@ -382,11 +389,12 @@ public:
     Tensor<T, N> mean_axis(size_t axis) const {
         if (axis >= N) throw std::runtime_error("Axis out of bounds");
 
-        Tensor<T, N> out(shape__);       // same shape as input
-        std::fill(out.get_data_ref().begin(), out.get_data_ref().end(), T(0));
+        std::array<size_t, N> out_shape = shape__;
+        out_shape[axis] = 1;  // reduced axis has size 1
+        Tensor<T, N> out(out_shape);
+        out.zeros();
 
-        // Temporary sum along axis
-        for (size_t flat = 0; flat < data_.size(); flat++) {
+        for (size_t flat = 0; flat < data_.size(); ++flat) {
             // unravel flat index
             size_t rem = flat;
             std::array<size_t, N> idx{};
@@ -395,22 +403,32 @@ public:
                 rem /= shape__[d];
             }
 
-            // Compute flat index ignoring axis
+            // compute flat index in output
             size_t flat_out = 0;
             for (size_t d = 0; d < N; ++d) {
-                size_t ix = (d == axis) ? 0 : idx[d]; // always 0 along reduced axis
+                size_t ix = (d == axis ? 0 : idx[d]);
                 flat_out += ix * out.get_strides()[d];
             }
 
             out.get_data_ref()[flat_out] += data_[flat];
         }
 
-        // Divide by number of elements along the axis
+        // divide by number of elements along axis
         T divisor = T(shape__[axis]);
-        for (size_t flat = 0; flat < out.get_data_ref().size(); ++flat)
-            out.get_data_ref()[flat] /= divisor;
+        for (auto& x : out.get_data_ref()) x /= divisor;
 
-        // Broadcast along axis
+        return out;
+    }
+
+    // Standard deviation along axis, result has size 1 along that axis
+    Tensor<T, N> std_axis(size_t axis) const {
+        Tensor<T, N> mean = mean_axis(axis);
+
+        std::array<size_t, N> out_shape = shape__;
+        out_shape[axis] = 1;
+        Tensor<T, N> out(out_shape);
+        out.zeros();
+
         for (size_t flat = 0; flat < data_.size(); ++flat) {
             size_t rem = flat;
             std::array<size_t, N> idx{};
@@ -419,48 +437,20 @@ public:
                 rem /= shape__[d];
             }
 
-            size_t flat_mean = 0;
+            // index in output
+            size_t flat_out = 0;
             for (size_t d = 0; d < N; ++d) {
-                size_t ix = (d == axis) ? 0 : idx[d];
-                flat_mean += ix * out.get_strides()[d];
+                size_t ix = (d == axis ? 0 : idx[d]);
+                flat_out += ix * out.get_strides()[d];
             }
 
-            out.get_data_ref()[flat] = out.get_data_ref()[flat_mean];
+            T diff = data_[flat] - mean.get_data_ref()[flat_out];
+            out.get_data_ref()[flat_out] += diff * diff;
         }
 
-        return out;
-    }
-
-    // Standard deviation along axis, broadcasted
-    Tensor<T, N> std_axis(size_t axis) const {
-        Tensor<T, N> mean = mean_axis(axis);
-        Tensor<T, N> out(shape__);
-        std::fill(out.get_data_ref().begin(), out.get_data_ref().end(), T(0));
-
-        // Accumulate squared deviations
-        for (size_t i = 0; i < data_.size(); ++i) {
-            T diff = data_[i] - mean.get_data_ref()[i];
-            out.get_data_ref()[i] = diff * diff;
-        }
-
-        // Sum along axis
-        std::array<size_t, N> idx{};
-        for (size_t flat = 0; flat < out.get_data_ref().size(); ++flat) {
-            size_t rem = flat;
-            for (int d = N - 1; d >= 0; --d) {
-                idx[d] = rem % shape__[d];
-                rem /= shape__[d];
-            }
-        }
-
-        // Divide by number of elements along axis
+        // divide by axis length and sqrt
         T divisor = T(shape__[axis]);
-        for (size_t i = 0; i < out.get_data_ref().size(); ++i)
-            out.get_data_ref()[i] /= divisor;
-
-        // Take sqrt
-        for (size_t i = 0; i < out.get_data_ref().size(); ++i)
-            out.get_data_ref()[i] = std::sqrt(out.get_data_ref()[i]);
+        for (auto& x : out.get_data_ref()) x = std::sqrt(x / divisor);
 
         return out;
     }
@@ -656,6 +646,17 @@ private:
         size_t p = 1;
         for (size_t i = start; i < end; i++) p *= v[i];
         return p;
+    }
+
+    size_t flat_index_broadcast(const array<size_t, N>& idx, const Tensor<T,N>& other) const {
+        size_t flat = 0;
+        const auto& s = other.get_shape_ref();
+        const auto& str = other.get_strides_ref();
+        for (size_t i = 0; i < N; ++i) {
+            size_t dim_idx = (s[i] == 1) ? 0 : idx[i];
+            flat += dim_idx * str[i];
+        }
+        return flat;
     }
 };
 
