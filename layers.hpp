@@ -1,3 +1,10 @@
+#pragma once
+#include "tensor.hpp"
+#include "activations.hpp"
+#include <optional>
+
+using namespace std;
+
 template<typename T>
 class Dense {
 public:
@@ -54,3 +61,36 @@ public:
     }
 };
 
+
+template <typename T,size_t M>
+class ScaledDotProductAttention {
+public:
+    std::pair<Tensor<T,M>, Tensor<T,M>> forward(
+        const Tensor<T,M>& queries,
+        const Tensor<T,M>& keys,
+        const Tensor<T,M>& values,
+        const std::optional<Tensor<T,M>>& mask = std::nullopt
+    ) {
+        // transpose last two dims of keys
+        std::array<size_t, M> perm;
+        for (size_t i = 0; i < M; i++) perm[i] = i;
+        perm[M-1] = M-2;
+        perm[M-2] = M-1;
+
+        auto K_T = keys.transpose(perm);
+
+        auto matmul = dot(queries, K_T);
+
+        // scale
+        float scale = 1.0f / std::sqrt((float)queries.get_shape_ref().back());
+        matmul = matmul * scale;
+
+        // softmax along last axis
+        auto attn_weights = Activations::Softmax(matmul, matmul.get_shape_ref().size() - 1);
+
+        // weighted sum
+        auto context = dot(attn_weights, values);
+
+        return {context, attn_weights};
+    }
+};

@@ -208,5 +208,22 @@ int main() {
     LayerNormalization<float,3> ln(TST.get_shape_ref()[2], TST.get_shape_ref());
     auto out = ln.forward(TST);
     out.print();
+
+    Tensor<float, 3> Q({1, 2, 2});
+    Tensor<float, 3> K({1, 2, 2});
+    Tensor<float, 3> V({1, 2, 2});
+    Q.fill_random(-1.0f,1.0f);
+    K.fill_random(-1.0f,1.0f);
+    V.fill_random(-1.0f,1.0f);
+    ScaledDotProductAttention<float, 3> sdpa;
+    auto [context, attn_weights] = sdpa.forward(Q, K, V);
+
+    // if you only need context:
+    out = context;
+    cout << endl;
+    out.print();
+
+    auto sum_t = out.sum();
+    cout << sum_t << endl;
     return 0;
 }

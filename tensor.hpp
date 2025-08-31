@@ -72,9 +72,13 @@ public:
     }
 
     // Sum
-    auto sum() const {
-        return accumulate(data_.begin(), data_.end(), 0);
-    }   
+    T sum() const {
+        T total = 0;
+        for (const auto& val : data_) {
+            total += val;
+        }
+        return total;
+    } 
 
     // Fill
     void fill_value(T val = T(0)) { for (auto& v : data_) v = val; }
