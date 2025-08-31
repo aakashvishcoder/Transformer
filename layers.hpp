@@ -19,3 +19,47 @@ public:
         return output;  // rank is dynamic, matches dot result
     }
 };
+
+template<typename T, size_t N>
+class LayerNormalization {
+public:
+    using Shape = std::array<size_t, N>;
+
+    Tensor<T, N> gamma;
+    Tensor<T, N> beta;
+    T epsilon;
+
+    LayerNormalization() : epsilon(1e-5) {} // default constructor
+
+    // proper constructor with input shape
+    LayerNormalization(size_t param_dim, const Shape& input_shape)
+        : epsilon(1e-5), gamma(), beta()
+    {
+        Shape param_shape = input_shape;
+        param_shape[N-1] = param_dim;  // last dimension = param_dim
+        gamma = Tensor<T, N>(param_shape);
+        gamma.fill_value(T(1));        // default ones
+        beta = Tensor<T, N>(param_shape);
+        beta.fill_value(T(0));         // default zeros
+    }
+
+    template<size_t NA>
+    Tensor<T, NA> forward(const Tensor<T, NA>& input) {
+        // mean and std along last axis
+        auto mean = input.mean_axis(N-1);
+        auto stddev = input.std_axis(N-1);
+
+        auto normalized = (input - mean) / (stddev + epsilon);
+        return normalized * gamma + beta;
+    }
+};
+
+template <typename T>
+class MultiHeadAttentionLayer {
+public:
+    size_t model_dim;
+    size_t num_heads;
+    size_t head_dim;
+
+    
+};

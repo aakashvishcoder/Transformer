@@ -14,6 +14,8 @@ public:
     using Shape = array<size_t, N>;
 
     // Constructors
+    Tensor() : data_(), shape__{}, strides_{} {}
+
     Tensor(const Shape& shape_)
         : shape__(shape_) {
         compute_strides();
@@ -43,6 +45,15 @@ public:
     const vector<T>& get_data_ref() const { return data_; }
     const Shape& get_shape_ref() const { return shape__; }
     const Shape& get_strides_ref() const { return strides_; }
+    // Setter
+
+    void initialize(const Shape& shape_) {
+        shape__ = shape_;
+        compute_strides();
+        size_t total_size = 1;
+        for (auto s : shape__) total_size *= s;
+        data_.resize(total_size);
+    }
 
     // Print
     void print() const {

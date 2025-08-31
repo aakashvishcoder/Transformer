@@ -200,5 +200,13 @@ int main() {
     cout << endl;
     Z.print();
 
+    Tensor<float,3> TST({2,3,4});
+    TST.fill_random(-1.0f,1.0f);
+    cout << endl;
+    TST.print();
+    cout<<endl;
+    LayerNormalization<float,3> ln(TST.get_shape_ref()[2], TST.get_shape_ref());
+    auto out = ln.forward(TST);
+    out.print();
     return 0;
 }
