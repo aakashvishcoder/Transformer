@@ -82,7 +82,7 @@ public:
         auto matmul = dot(queries, K_T);
 
         // scale
-        float scale = 1.0f / std::sqrt((float)queries.get_shape_ref().back());
+        float scale = 1.0f / sqrt((float)queries.get_shape_ref().back());
         matmul = matmul * scale;
 
         // softmax along last axis
@@ -94,3 +94,54 @@ public:
         return {context, attn_weights};
     }
 };
+
+template <typename T, size_t M>
+class MultiHeadAttentionLayer {
+public:
+    size_t num_heads;
+    size_t head_dim;
+    size_t embed_dim;
+    size_t out_features;
+    
+    std::vector<Dense<T>> wq, wk, wv; // per-head projections
+    Dense<T> wo;                       // final output projection
+
+    MultiHeadAttentionLayer(size_t embed_dim_, size_t num_heads_, size_t out_features_)
+        : num_heads(num_heads_),
+          embed_dim(embed_dim_),
+          out_features(out_features_),
+          head_dim((embed_dim_ + num_heads_ - 1) / num_heads_), // ceil division
+          wo(head_dim * num_heads_, out_features_)             // input = concat(heads)
+    {
+        for (size_t i = 0; i < num_heads; i++) {
+            wq.emplace_back(Dense<T>(embed_dim, head_dim));
+            wk.emplace_back(Dense<T>(embed_dim, head_dim));
+            wv.emplace_back(Dense<T>(embed_dim, head_dim));
+        }
+    }
+
+    Tensor<T, M> forward(
+        const Tensor<T, M>& queries,
+        const Tensor<T, M>& keys,
+        const Tensor<T, M>& values
+    ) {
+        std::vector<Tensor<T, M>> head_outputs;
+
+        for (size_t i = 0; i < num_heads; i++) {
+            auto q = wq[i].forward(queries);
+            auto k = wk[i].forward(keys);
+            auto v = wv[i].forward(values);
+
+            ScaledDotProductAttention<T, M> sdpa;
+            auto [context, attn_weights] = sdpa.forward(q, k, v);
+            head_outputs.push_back(context);
+        }
+
+        // Concatenate along last axis
+        auto concat = Tensor<T, M>::concat(head_outputs, M-1);
+
+        // Final linear projection to out_features
+        return wo.forward(concat);
+    }
+};
+

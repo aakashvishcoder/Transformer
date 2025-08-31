@@ -549,6 +549,81 @@ public:
     const T* data() const { return data_.data(); }
     T* data() { return data_.data(); }
 
+    // --- Concatenate tensors along a given axis ---
+    static Tensor<T, N> concat(const std::vector<Tensor<T, N>>& tensors, size_t axis) {
+        if (tensors.empty()) throw std::runtime_error("No tensors to concat");
+
+        auto shape0 = tensors[0].get_shape_ref();
+        size_t concat_dim = 0;
+        for (const auto& t : tensors) {
+            auto s = t.get_shape_ref();
+            for (size_t i = 0; i < N; i++) {
+                if (i == axis) continue;
+                if (s[i] != shape0[i])
+                    throw std::runtime_error("Shapes must match except on concat axis");
+            }
+            concat_dim += s[axis];
+        }
+
+        Shape new_shape = shape0;
+        new_shape[axis] = concat_dim;
+        Tensor<T, N> result(new_shape);
+
+        // Copy each tensor into the result
+        size_t offset = 0;
+        for (const auto& t : tensors) {
+            result.copy_along_axis(t, axis, offset);
+            offset += t.get_shape_ref()[axis];
+        }
+
+        return result;
+    }
+
+    // --- Copy source tensor into this tensor along a given axis with offset ---
+    void copy_along_axis(const Tensor<T, N>& source, size_t axis, size_t offset) {
+        std::array<size_t, N> idx_src{};
+        std::array<size_t, N> idx_dest{};
+        recursive_copy(source, idx_src, idx_dest, 0, axis, offset);
+    }
+
+    // --- Recursive helper for copy_along_axis ---
+    void recursive_copy(const Tensor<T, N>& source,
+                        std::array<size_t, N>& idx_src,
+                        std::array<size_t, N>& idx_dest,
+                        size_t dim,
+                        size_t axis,
+                        size_t offset)
+    {
+        if (dim == N) {
+            size_t dest_flat = get_flat_index(idx_dest);
+            size_t src_flat  = source.get_flat_index(idx_src);
+
+            if (dest_flat >= data_.size())
+                throw std::runtime_error("concat: destination flat index out of bounds");
+            if (src_flat >= source.size())
+                throw std::runtime_error("concat: source flat index out of bounds");
+
+            data_[dest_flat] = source.get_data_ref()[src_flat];
+            return;
+        }
+
+        for (size_t i = 0; i < source.get_shape_ref()[dim]; ++i) {
+            idx_src[dim] = i;
+            idx_dest[dim] = (dim == axis) ? i + offset : i;
+            recursive_copy(source, idx_src, idx_dest, dim + 1, axis, offset);
+        }
+    }
+
+    size_t get_flat_index(const std::array<size_t, N>& idx) const {
+        size_t flat = 0;
+        for (size_t i = 0; i < N; i++) {
+            if (idx[i] >= shape__[i])
+                throw std::runtime_error("Index out of bounds in get_flat_index");
+            flat += idx[i] * strides_[i];
+        }
+        return flat;
+    }
+
 private:
     vector<T> data_;
     Shape shape__;

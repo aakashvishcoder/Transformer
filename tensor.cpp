@@ -209,21 +209,38 @@ int main() {
     auto out = ln.forward(TST);
     out.print();
 
-    Tensor<float, 3> Q({1, 2, 2});
-    Tensor<float, 3> K({1, 2, 2});
-    Tensor<float, 3> V({1, 2, 2});
-    Q.fill_random(-1.0f,1.0f);
-    K.fill_random(-1.0f,1.0f);
-    V.fill_random(-1.0f,1.0f);
-    ScaledDotProductAttention<float, 3> sdpa;
+    // --- Parameters ---
+    size_t batch = 1;
+    size_t seq_len = 2;
+    size_t embed_dim = 8;    // embedding dimension of input
+    size_t num_heads = 2;    // number of attention heads
+    size_t out_features = 8; // desired output dimension of MHA
+
+    // --- Create tensors ---
+    Tensor<float, 3> Q({batch, seq_len, embed_dim});
+    Tensor<float, 3> K({batch, seq_len, embed_dim});
+    Tensor<float, 3> V({batch, seq_len, embed_dim});
+
+    Q.fill_random(-1.0f, 1.0f);
+    K.fill_random(-1.0f, 1.0f);
+    V.fill_random(-1.0f, 1.0f);
+
+    // --- Scaled Dot Product Attention ---
+    ScaledDotProductAttention<float,3> sdpa;
     auto [context, attn_weights] = sdpa.forward(Q, K, V);
 
-    // if you only need context:
-    out = context;
-    cout << endl;
-    out.print();
+    cout << "--- Context ---" << endl;
+    context.print();
 
-    auto sum_t = out.sum();
-    cout << sum_t << endl;
+    auto sum_t = context.sum();
+    cout << "Sum of context: " << sum_t << endl;
+
+    // --- Multi-Head Attention ---
+    // Constructor: (embed_dim, num_heads, out_features)
+    MultiHeadAttentionLayer<float,3> mhal(embed_dim, num_heads, out_features);
+    auto mhal_output = mhal.forward(Q, K, V);
+
+    cout << "--- MHA Output ---" << endl;
+    mhal_output.print();
     return 0;
 }
