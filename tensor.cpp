@@ -4,6 +4,7 @@
 #include "dataframe.hpp"
 #include "layers.hpp"
 #include "architecture.hpp"
+#include "preprocessing.hpp"
 #include <iostream>
 using namespace std;
 
@@ -248,6 +249,40 @@ int main() {
 
     cout << "\n--- Transformer Decoder Output ---\n";
     output2.print();
+
+    SimpleTokenizer tok;
+    // build vocab
+    tok.add_token("the");
+    tok.add_token("cat");
+    tok.add_token("sat");
+    tok.add_token("on");
+    tok.add_token("mat");
+
+    string text = "the cat sat on the mat";
+    auto ids = tok.encode(text);
+
+    cout << "Token IDs: ";
+    for (int id : ids.get_data_ref()) cout << id << " ";
+    cout << endl;
+
+    BPE tokenizer(270);  
+
+    std::vector<std::string> corpus = {
+        "hello", "hello", "hell", "hello hell", "hello hello", "hello hell"
+    };
+
+    tokenizer.train(corpus);
+
+    auto encoded = tokenizer.encode("hello hell").get_data();
+    std::cout << "Encoded: ";
+    for (int t : encoded)
+        std::cout << "<" << t << "> ";
+    std::cout << "\n";
+
+    std::string decoded = tokenizer.decode(encoded);
+    std::cout << "Decoded: " << decoded << "\n";
+
+    tokenizer.print_token_map();
 
     return 0;
 }

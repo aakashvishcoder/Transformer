@@ -14,7 +14,7 @@ public:
     using Shape = array<size_t, N>;
 
     // Constructors
-    Tensor() : data_(), shape__{}, strides_{} {}
+    Tensor() = default;
 
     Tensor(const Shape& shape_)
         : shape__(shape_) {
@@ -45,6 +45,7 @@ public:
     const vector<T>& get_data_ref() const { return data_; }
     const Shape& get_shape_ref() const { return shape__; }
     const Shape& get_strides_ref() const { return strides_; }
+    
     // Setter
 
     void initialize(const Shape& shape_) {
@@ -454,7 +455,6 @@ public:
 
         return out;
     }
-
 
     // Squeeze / Unsqueeze
     Tensor<T,N-1> squeeze(size_t axis) const {

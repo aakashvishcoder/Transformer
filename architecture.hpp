@@ -65,8 +65,8 @@ public:
           ln2(embed_dim, {1, 1, embed_dim}),
           ln3(embed_dim, {1, 1, embed_dim}) {}
     
-    Tensor<T,M> forward(const Tensor<T,M>& queries, const Tensor<T,M>& keys, const Tensor<T,M>& x) {
-        auto attn_out_1 = mh1.forward(x, x, x);
+    Tensor<T,M> forward(const Tensor<T,M>& queries, const Tensor<T,M>& keys, const Tensor<T,M>& x,const std::optional<Tensor<T,M>>& mask = std::nullopt) {
+        auto attn_out_1 = mh1.forward(x, x, x, mask);
         auto res1 = ln1.forward(x + attn_out_1);
         auto attn_out_2 = mh2.forward(queries, keys, res1);
         auto res2 = ln2.forward(res1 + attn_out_2);
@@ -87,10 +87,10 @@ public:
         }
     }
 
-    Tensor<T,M> forward(const Tensor<T,M>& qr, const Tensor<T,M>& x,size_t embed_size) {
+    Tensor<T,M> forward(const Tensor<T,M>& qr, const Tensor<T,M>& x,size_t embed_size, const std::optional<Tensor<T,M>>& mask = std::nullopt) {
         Tensor<T, M> out = x;
         for (auto& block : blocks) {
-            out = block.forward(qr,qr,out);
+            out = block.forward(qr,qr,out,mask);
         }
         Dense<T> l1(embed_size,embed_size);
         out = l1.forward(out);
