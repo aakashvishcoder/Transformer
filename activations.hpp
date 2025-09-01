@@ -18,9 +18,12 @@ struct Activations {
     // In-place LeakyReLU
     template<typename T, size_t N>
     static Tensor<T,N> LeakyReLU(Tensor<T,N>& X, T alpha = T(0.01)) {
+        Tensor<T,N> result(X.get_shape_ref());
         auto& data = X.get_data_ref();
+        auto& result_data = result.get_data_ref();
         for (size_t i = 0; i < data.size(); ++i)
-            data[i] = (data[i] > T(0)) ? data[i] : alpha * data[i];
+            result_data[i] = (data[i] > T(0)) ? data[i] : alpha * data[i];
+        return result;
     }
 
     // Softmax along a given axis, returns new tensor

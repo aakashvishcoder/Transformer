@@ -181,7 +181,8 @@ public:
     Tensor<T, M> forward(
         const Tensor<T, M>& queries,
         const Tensor<T, M>& keys,
-        const Tensor<T, M>& values
+        const Tensor<T, M>& values,
+        const std::optional<Tensor<T,M>>& mask = std::nullopt
     ) {
         vector<Tensor<T, M>> head_outputs;
 
@@ -191,7 +192,7 @@ public:
             auto v = wv[i].forward(values);
 
             ScaledDotProductAttention<T, M> sdpa;
-            auto [context, attn_weights] = sdpa.forward(q, k, v);
+            auto [context, attn_weights] = sdpa.forward(q, k, v, mask);
             head_outputs.push_back(context);
         }
 
