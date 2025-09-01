@@ -193,4 +193,25 @@ public:
         for (const auto& [id, str] : id_to_token)
             cout << id << ": \"" << str << "\"\n";
     }
+
+    // Save / Load merges
+    void save_merges(const string& filename) {
+        ofstream out(filename);
+        for (const auto& [pair, id] : merges)
+            out << pair.first << " " << pair.second << " " << id << "\n";
+        out.close();
+    }
+
+    void load_merges(const string& filename) {
+        ifstream in(filename);
+        int a, b, id;
+        while (in >> a >> b >> id) {
+            merges[{a, b}] = id;
+            reverse_merges[id] = {a, b};
+            string s = decode_token(a) + decode_token(b);
+            id_to_token[id] = s;
+            token_to_id[s] = id;
+            next_token_id = max(next_token_id, id + 1);
+        }
+    }
 };
