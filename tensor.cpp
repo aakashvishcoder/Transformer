@@ -6,10 +6,10 @@
 #include "architecture.hpp"
 #include "preprocessing.hpp"
 #include <iostream>
+#include <array>
 using namespace std;
 
 int main() {
-
     Tensor<float, 2> A({2, 3});
     A.fill_random(1, 5);
     cout << "Original A: ";
@@ -225,7 +225,7 @@ int main() {
     input1.fill_random(-0.1f, 0.1f);
 
     // Print input
-    std::cout << "--- Input Tensor ---\n";
+    cout << "--- Input Tensor ---\n";
     input1.print();
 
     // Create Transformer Encoder
@@ -235,7 +235,7 @@ int main() {
     Tensor<float, 3> output1 = encoder.forward(input);
 
     // Print output
-    std::cout << "\n--- Transformer Encoder Output ---\n";
+    cout << "\n--- Transformer Encoder Output ---\n";
     output1.print();
 
     Tensor<float, 3> input2({batch_size, seq_len, embed_dim});
@@ -267,22 +267,30 @@ int main() {
 
     BPE tokenizer(270);  
 
-    std::vector<std::string> corpus = {
+    vector<string> corpus = {
         "hello", "hello", "hell", "hello hell", "hello hello", "hello hell"
     };
 
     tokenizer.train(corpus);
 
     auto encoded = tokenizer.encode("hello hell").get_data();
-    std::cout << "Encoded: ";
+    cout << "Encoded: ";
     for (int t : encoded)
-        std::cout << "<" << t << "> ";
-    std::cout << "\n";
+        cout << "<" << t << "> ";
+    cout << "\n";
 
-    std::string decoded = tokenizer.decode(encoded);
-    std::cout << "Decoded: " << decoded << "\n";
+    string decoded = tokenizer.decode(encoded);
+    cout << "Decoded: " << decoded << "\n";
 
     tokenizer.print_token_map();
 
+    const size_t batch = 2, seq = 4, dim = 6;
+
+    Tensor<float, 3> input_tensor({batch, seq, dim});
+    input_tensor.fill_random(-1.0f, 1.0f);
+    PositionalEncodingLayer<float, 3> pencoder;
+    pencoder.add_positional_encoding(input_tensor);
+    input_tensor.print();
+    
     return 0;
 }

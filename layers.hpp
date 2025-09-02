@@ -23,7 +23,7 @@ public:
     Tensor<T, N> forward(const Tensor<T, N>& input) const {
         const auto& in_shape = input.get_shape_ref();
         if (in_shape[N-1] != weight_.get_shape_ref()[0])
-            throw std::runtime_error("Input last dim does not match weight rows");
+            throw runtime_error("Input last dim does not match weight rows");
 
         // Output shape: same as input, last dim = weight cols
         auto out_shape = in_shape;
@@ -70,7 +70,7 @@ public:
         const auto& in_data = out.get_data_ref();
         auto& relu_data = relu_out.get_data_ref();
         for (size_t i = 0; i < in_data.size(); ++i)
-            relu_data[i] = std::max(in_data[i], T(0));
+            relu_data[i] = max(in_data[i], T(0));
 
         out = fc2.forward(relu_out);
         return out;
@@ -80,7 +80,7 @@ public:
 template<typename T, size_t N>
 class LayerNormalization {
 public:
-    using Shape = std::array<size_t, N>;
+    using Shape = array<size_t, N>;
 
     Tensor<T, N> gamma;
     Tensor<T, N> beta;
@@ -123,14 +123,14 @@ public:
 template <typename T,size_t M>
 class ScaledDotProductAttention {
 public:
-    std::pair<Tensor<T,M>, Tensor<T,M>> forward(
+    pair<Tensor<T,M>, Tensor<T,M>> forward(
         const Tensor<T,M>& queries,
         const Tensor<T,M>& keys,
         const Tensor<T,M>& values,
-        const std::optional<Tensor<T,M>>& mask = std::nullopt
+        const optional<Tensor<T,M>>& mask = nullopt
     ) {
         // transpose last two dims of keys
-        std::array<size_t, M> perm;
+        array<size_t, M> perm;
         for (size_t i = 0; i < M; i++) perm[i] = i;
         perm[M-1] = M-2;
         perm[M-2] = M-1;
@@ -161,7 +161,7 @@ public:
     size_t embed_dim;
     size_t out_features;
     
-    std::vector<Dense<T>> wq, wk, wv; // per-head projections
+    vector<Dense<T>> wq, wk, wv; // per-head projections
     Dense<T> wo;                       // final output projection
 
     MultiHeadAttentionLayer(size_t embed_dim_, size_t num_heads_, size_t out_features_)
@@ -182,7 +182,7 @@ public:
         const Tensor<T, M>& queries,
         const Tensor<T, M>& keys,
         const Tensor<T, M>& values,
-        const std::optional<Tensor<T,M>>& mask = std::nullopt
+        const optional<Tensor<T,M>>& mask = nullopt
     ) {
         vector<Tensor<T, M>> head_outputs;
 
@@ -204,5 +204,40 @@ public:
     }
 };
 
+template <typename T, size_t M>
+class PositionalEncodingLayer {
+public:
+    Tensor<T, 2> positional_encoding(const size_t seq_len, const size_t d_model) {
+        using Shape = vector<size_t>;
+
+        vector<T> flat_data;
+        flat_data.reserve(seq_len * d_model); 
+
+        for (size_t pos = 0; pos < seq_len; ++pos) {
+            for (size_t dim = 0; dim < d_model; ++dim) {
+                T angle = pos / pow(T(10000.0), T(2.0 * (dim / 2)) / d_model);
+                flat_data.push_back((dim % 2 == 0) ? sin(angle) : cos(angle));
+            }
+        }
+
+        return Tensor<T, 2>({seq_len, d_model}, flat_data);
+    }
 
 
+    void add_positional_encoding(Tensor<T,M>& batch_input) {
+        const auto& shape = batch_input.get_shape();
+        size_t batch_size = shape[0];
+        size_t seq_len = shape[1];
+        size_t d_model = shape[2];
+
+        auto pe = positional_encoding(seq_len, d_model);
+
+        for(size_t b = 0; b < batch_size; b++) {
+            for(size_t pos = 0; pos < seq_len; pos++) {
+                for(size_t i = 0; i < d_model; i++) {
+                    batch_input({b,pos,i}) += pe({pos,i});
+                }
+            }
+        }
+    }
+};
