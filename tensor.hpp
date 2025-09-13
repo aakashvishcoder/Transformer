@@ -5,6 +5,9 @@
 #include <random>
 #include <stdexcept>
 #include <algorithm>
+#include <memory>   
+#include <functional> 
+#include <unordered_set>
 
 using namespace std;
 
@@ -12,40 +15,54 @@ template<typename T, size_t N>
 class Tensor {
 public:
     using Shape = array<size_t, N>;
-
+    vector<Tensor<T,N>*> parents_;
     // Constructors
     Tensor() = default;
 
-    Tensor(const Shape& shape_)
-        : shape__(shape_) {
+    Tensor(const Shape& shape_, bool requires_grad = false)
+        : shape__(shape_), requires_grad_(requires_grad) {
         compute_strides();
         size_t total_size = 1;
         for (auto s : shape__) total_size *= s;
         data_.resize(total_size);
+        if (requires_grad_) grad_.resize(total_size, T(0));
     }
 
-    Tensor(const Shape& shape_, const vector<T>& data)
-        : shape__(shape_), data_(data) {
+    Tensor(const Shape& shape_, const std::vector<T>& data, bool requires_grad = false)
+        : shape__(shape_), data_(data), requires_grad_(requires_grad) {
         compute_strides();
         size_t expected_size = 1;
         for (auto s : shape__) expected_size *= s;
         if (expected_size != data_.size())
-            throw runtime_error("Data size does not match shape");
+            throw std::runtime_error("Data size does not match shape");
+        if (requires_grad_) grad_.resize(data_.size(), T(0));
     }
 
     // Getters
     const Shape& get_shape() const { return shape__; }
     const vector<T>& get_data() const { return data_; }
     const Shape& get_strides() const { return strides_; }
+    
+    void set_requires_grad(bool flag) {
+        requires_grad_ = flag;
+        if (flag && grad_.size() != data_.size())
+            grad_.resize(data_.size(), T(0));
+    }
+
+    bool requires_grad() const { return requires_grad_; }
 
     vector<T>& get_data_ref() { return data_; }
     Shape& get_shape_ref() { return shape__; }
     Shape& get_strides_ref() { return strides_; }
+    const std::vector<T>& grad() const { return grad_; }
+    std::vector<T>& grad() { return grad_; }
+
 
     const vector<T>& get_data_ref() const { return data_; }
     const Shape& get_shape_ref() const { return shape__; }
     const Shape& get_strides_ref() const { return strides_; }
-    
+    const function<void()>& get_backward_fn() const { return backward_fn_; }
+
     // Setter
 
     void initialize(const Shape& shape_) {
@@ -55,6 +72,8 @@ public:
         for (auto s : shape__) total_size *= s;
         data_.resize(total_size);
     }
+
+    void set_backward_fn(function<void(Tensor<T,N>*)> fn) { backward_fn_ = std::move(fn); }
 
     // Print
     void print() const {
@@ -73,13 +92,25 @@ public:
     }
 
     // Sum
-    T sum() const {
-        T total = 0;
-        for (const auto& val : data_) {
-            total += val;
+    Tensor<T,1> sum() const {
+        T total = std::accumulate(data_.begin(), data_.end(), T(0));
+        Tensor<T,1> result({1}, {total}, requires_grad_);
+
+        if (requires_grad_) {
+            auto* lhs = const_cast<Tensor<T,N>*>(this);
+            result.parents_ = {lhs};
+
+            result.set_backward_fn([lhs](Tensor<T,1>* self) {
+                const auto grad_out = self->grad_[0];
+                if (lhs->requires_grad_) {
+                    if (lhs->grad_.empty()) lhs->grad_.resize(lhs->data_.size(), T(0));
+                    for (size_t i=0; i<lhs->data_.size(); i++)
+                        lhs->grad_[i] += grad_out;
+                }
+            });
         }
-        return total;
-    } 
+        return result;
+    }
 
     // Fill
     void fill_value(T val = T(0)) { for (auto& v : data_) v = val; }
@@ -137,10 +168,33 @@ public:
     }
 
     Tensor<T,N> operator+(const Tensor<T,N>& other) const {
-        Tensor<T,N> result = *this;
-        result += other;
+        Tensor<T,N> result(shape__);
+        for (size_t i=0; i<data_.size(); i++)
+            result.data_[i] = data_[i] + other.data_[i];
+
+        if (requires_grad_ || other.requires_grad_) {
+            result.requires_grad_ = true;
+            auto* lhs = const_cast<Tensor<T,N>*>(this);
+            auto* rhs = const_cast<Tensor<T,N>*>(&other);
+            result.parents_ = {lhs, rhs};
+
+            result.set_backward_fn([lhs, rhs](Tensor<T,N>* self) {
+                const auto& grad_out = self->get_grad_ref();
+                if (lhs->requires_grad_) {
+                    if (lhs->grad_.empty()) lhs->grad_.resize(lhs->data_.size(), T(0));
+                    for (size_t i=0; i<lhs->data_.size(); i++)
+                        lhs->grad_[i] += grad_out[i];
+                }
+                if (rhs->requires_grad_) {
+                    if (rhs->grad_.empty()) rhs->grad_.resize(rhs->data_.size(), T(0));
+                    for (size_t i=0; i<rhs->data_.size(); i++)
+                        rhs->grad_[i] += grad_out[i];
+                }
+            });
+        }
         return result;
     }
+
 
     Tensor<T,N>& operator-=(const Tensor<T,N>& other) {
         if (shape__ != other.shape__)
@@ -151,8 +205,30 @@ public:
     }
 
     Tensor<T,N> operator-(const Tensor<T,N>& other) const {
-        Tensor<T,N> result = *this;
-        result -= other;
+        Tensor<T,N> result(shape__);
+        for (size_t i=0; i<data_.size(); i++)
+            result.data_[i] = data_[i] - other.data_[i];
+
+        if (requires_grad_ || other.requires_grad_) {
+            result.requires_grad_ = true;
+            auto* lhs = const_cast<Tensor<T,N>*>(this);
+            auto* rhs = const_cast<Tensor<T,N>*>(&other);
+            result.parents_ = {lhs, rhs};
+
+            result.set_backward_fn([lhs, rhs](Tensor<T,N>* self) {
+                const auto& grad_out = self->get_grad_ref();
+                if (lhs->requires_grad_) {
+                    if (lhs->grad_.empty()) lhs->grad_.resize(lhs->data_.size(), T(0));
+                    for (size_t i=0; i<lhs->data_.size(); i++)
+                        lhs->grad_[i] += grad_out[i];
+                }
+                if (rhs->requires_grad_) {
+                    if (rhs->grad_.empty()) rhs->grad_.resize(rhs->data_.size(), T(0));
+                    for (size_t i=0; i<rhs->data_.size(); i++)
+                        rhs->grad_[i] -= grad_out[i];   // 🔥 FIXED SIGN
+                }
+            });
+        }
         return result;
     }
 
@@ -172,8 +248,30 @@ public:
     }
 
     Tensor<T,N> operator*(const Tensor<T,N>& other) const {
-        Tensor<T,N> result = *this;
-        result *= other;
+        Tensor<T,N> result(shape__);
+        for (size_t i=0; i<data_.size(); i++)
+            result.data_[i] = data_[i] * other.data_[i];
+
+        if (requires_grad_ || other.requires_grad_) {
+            result.requires_grad_ = true;
+            auto* lhs = const_cast<Tensor<T,N>*>(this);
+            auto* rhs = const_cast<Tensor<T,N>*>(&other);
+            result.parents_ = {lhs, rhs};
+
+            result.set_backward_fn([lhs, rhs](Tensor<T,N>* self) {
+                const auto& grad_out = self->get_grad_ref();
+                if (lhs->requires_grad_) {
+                    if (lhs->grad_.empty()) lhs->grad_.resize(lhs->data_.size(), T(0));
+                    for (size_t i=0; i<lhs->data_.size(); i++)
+                        lhs->grad_[i] += rhs->data_[i] * grad_out[i];
+                }
+                if (rhs->requires_grad_) {
+                    if (rhs->grad_.empty()) rhs->grad_.resize(rhs->data_.size(), T(0));
+                    for (size_t i=0; i<rhs->data_.size(); i++)
+                        rhs->grad_[i] += lhs->data_[i] * grad_out[i];
+                }
+            });
+        }
         return result;
     }
 
@@ -186,46 +284,117 @@ public:
     }
 
     Tensor<T,N> operator/(const Tensor<T,N>& other) const {
-        Tensor<T,N> result = *this;
-        result /= other;
-        return result;
-    }
-
-    Tensor<T,N> operator-() const {
-        Tensor<T,N> result(shape__);           
-        const auto& in = data_;
-        auto& out = result.get_data_ref();
-        for (size_t i = 0; i < in.size(); i++)
-            out[i] = -in[i];                  
-        return result;
-    }
-
-    Tensor<T,N> sqrt() const {
         Tensor<T,N> result(shape__);
-        const auto& in_data = get_data_ref();
-        auto& out_data = result.get_data_ref();
-        for(size_t i = 0; i < in_data.size(); i++) {
-            out_data[i] = std::sqrt(in_data[i]);
+        for (size_t i=0; i<data_.size(); i++)
+            result.data_[i] = data_[i] / other.data_[i];
+
+        if (requires_grad_ || other.requires_grad_) {
+            result.requires_grad_ = true;
+            auto* lhs = const_cast<Tensor<T,N>*>(this);
+            auto* rhs = const_cast<Tensor<T,N>*>(&other);
+            result.parents_ = {lhs, rhs};
+
+            result.set_backward_fn([lhs, rhs](Tensor<T,N>* self) {
+                const auto& grad_out = self->get_grad_ref();
+                if (lhs->requires_grad_) {
+                    if (lhs->grad_.empty()) lhs->grad_.resize(lhs->data_.size(), T(0));
+                    for (size_t i=0; i<lhs->data_.size(); i++)
+                        lhs->grad_[i] += grad_out[i] / rhs->data_[i];
+                }
+                if (rhs->requires_grad_) {
+                    if (rhs->grad_.empty()) rhs->grad_.resize(rhs->data_.size(), T(0));
+                    for (size_t i=0; i<rhs->data_.size(); i++)
+                        rhs->grad_[i] += -lhs->data_[i] * grad_out[i] / (rhs->data_[i] * rhs->data_[i]);
+                }
+            });
         }
         return result;
     }
 
+    // Exponential
     Tensor<T,N> exp() const {
         Tensor<T,N> result(shape__);
-        const auto& in_data = get_data_ref(); // calls const version
-        auto& out_data = result.get_data_ref(); // non-const for writing
-        for (size_t i = 0; i < in_data.size(); i++) {
-            out_data[i] = std::exp(in_data[i]);
+        for (size_t i=0; i<data_.size(); i++)
+            result.data_[i] = std::exp(data_[i]);
+
+        if (requires_grad_) {
+            result.requires_grad_ = true;
+            auto* lhs = const_cast<Tensor<T,N>*>(this);
+            result.parents_ = {lhs};
+
+            result.set_backward_fn([lhs](Tensor<T,N>* self) {
+                const auto& grad_out = self->get_grad_ref();
+                for (size_t i=0; i<lhs->data_.size(); i++) {
+                    if (lhs->grad_.empty()) lhs->grad_.resize(lhs->data_.size(), T(0));
+                    lhs->grad_[i] += std::exp(lhs->data_[i]) * grad_out[i];
+                }
+            });
         }
         return result;
     }
 
+    // Natural logarithm
     Tensor<T,N> log() const {
         Tensor<T,N> result(shape__);
-        const auto& in_data = get_data_ref(); // calls const version
-        auto& out_data = result.get_data_ref(); // non-const for writing
-        for (size_t i = 0; i < in_data.size(); i++) {
-            out_data[i] = std::log(in_data[i]);
+        for (size_t i=0; i<data_.size(); i++)
+            result.data_[i] = std::log(data_[i]);
+
+        if (requires_grad_) {
+            result.requires_grad_ = true;
+            auto* lhs = const_cast<Tensor<T,N>*>(this);
+            result.parents_ = {lhs};
+
+            result.set_backward_fn([lhs](Tensor<T,N>* self) {
+                const auto& grad_out = self->get_grad_ref();
+                for (size_t i=0; i<lhs->data_.size(); i++) {
+                    if (lhs->grad_.empty()) lhs->grad_.resize(lhs->data_.size(), T(0));
+                    lhs->grad_[i] += (1.0 / lhs->data_[i]) * grad_out[i];
+                }
+            });
+        }
+        return result;
+    }
+
+    // Square root
+    Tensor<T,N> sqrt() const {
+        Tensor<T,N> result(shape__);
+        for (size_t i=0; i<data_.size(); i++)
+            result.data_[i] = std::sqrt(data_[i]);
+
+        if (requires_grad_) {
+            result.requires_grad_ = true;
+            auto* lhs = const_cast<Tensor<T,N>*>(this);
+            result.parents_ = {lhs};
+
+            result.set_backward_fn([lhs](Tensor<T,N>* self) {
+                const auto& grad_out = self->get_grad_ref();
+                for (size_t i=0; i<lhs->data_.size(); i++) {
+                    if (lhs->grad_.empty()) lhs->grad_.resize(lhs->data_.size(), T(0));
+                    lhs->grad_[i] += (0.5 / std::sqrt(lhs->data_[i])) * grad_out[i];
+                }
+            });
+        }
+        return result;
+    }
+
+    // Negation
+    Tensor<T,N> operator-() const {
+        Tensor<T,N> result(shape__);
+        for (size_t i=0; i<data_.size(); i++)
+            result.data_[i] = -data_[i];
+
+        if (requires_grad_) {
+            result.requires_grad_ = true;
+            auto* lhs = const_cast<Tensor<T,N>*>(this);
+            result.parents_ = {lhs};
+
+            result.set_backward_fn([lhs](Tensor<T,N>* self) {
+                const auto& grad_out = self->get_grad_ref();
+                for (size_t i=0; i<lhs->data_.size(); i++) {
+                    if (lhs->grad_.empty()) lhs->grad_.resize(lhs->data_.size(), T(0));
+                    lhs->grad_[i] -= grad_out[i];  // 🔥 derivative of -x is -1
+                }
+            });
         }
         return result;
     }
@@ -245,63 +414,206 @@ public:
         return *this;
     }
 
-    // Arithmetic with scalar
-    Tensor<T,N>& operator+=(T scalar) { 
-        for(auto &v : data_) v += scalar; 
-        return *this; 
+    // Addition with scalar: x + scalar
+    Tensor<T,N> operator+(T scalar) {
+        Tensor<T,N> result(shape__, requires_grad_);
+        if (requires_grad_) result.grad_.resize(result.data_.size(), T(0));
+
+        auto& out_data = result.get_data_ref();
+        for(size_t i=0;i<data_.size();++i)
+            out_data[i] = data_[i] + scalar;
+
+        if(requires_grad_) {
+            result.parents_ = {this};
+            result.set_backward_fn([this, &result]() {
+                auto& grad_out = result.get_grad_ref();
+                for(size_t i=0;i<data_.size();++i)
+                    this->grad_[i] += grad_out[i];  // dy/dx = 1
+            });
+        }
+
+        return result;
     }
 
-    Tensor<T,N>& operator-=(T scalar) { 
-        for(auto &v : data_) v -= scalar; 
-        return *this; 
+    // Subtraction with scalar: x - scalar
+    Tensor<T,N> operator-(T scalar) {
+        Tensor<T,N> result(shape__, requires_grad_);
+        if (requires_grad_) result.grad_.resize(result.data_.size(), T(0));
+
+        auto& out_data = result.get_data_ref();
+        for(size_t i=0;i<data_.size();++i)
+            out_data[i] = data_[i] - scalar;
+
+        if(requires_grad_) {
+            result.parents_ = {this};
+            result.set_backward_fn([this, &result]() {
+                auto& grad_out = result.get_grad_ref();
+                for(size_t i=0;i<data_.size();++i)
+                    this->grad_[i] += grad_out[i];  // dy/dx = 1
+            });
+        }
+
+        return result;
     }
 
-    Tensor<T,N>& operator*=(T scalar) { 
-        for(auto &v : data_) v *= scalar; 
-        return *this; 
+    // Multiplication with scalar: x * scalar
+    Tensor<T,N> operator*(T scalar) const {
+        Tensor<T,N> result(shape__);
+        for (size_t i=0; i<data_.size(); i++)
+            result.data_[i] = data_[i] * scalar;
+
+        if (requires_grad_) {
+            result.requires_grad_ = true;
+            auto* lhs = const_cast<Tensor<T,N>*>(this);
+            result.parents_ = {lhs};
+
+            result.set_backward_fn([lhs, scalar](Tensor<T,N>* self) {
+                const auto& grad_out = self->get_grad_ref();
+                if (lhs->requires_grad_) {
+                    if (lhs->grad_.empty()) lhs->grad_.resize(lhs->data_.size(), T(0));
+                    for (size_t i=0; i<lhs->data_.size(); i++)
+                        lhs->grad_[i] += scalar * grad_out[i];
+                }
+            });
+        }
+        return result;
     }
 
-    Tensor<T,N>& operator/=(T scalar) { 
-        for(auto &v : data_) v /= scalar; 
-        return *this; 
+    // Division by scalar: x / scalar
+    Tensor<T,N> operator/(T scalar) {
+        Tensor<T,N> result(shape__, requires_grad_);
+        if (requires_grad_) result.grad_.resize(result.data_.size(), T(0));
+
+        auto& out_data = result.get_data_ref();
+        for(size_t i=0;i<data_.size();++i)
+            out_data[i] = data_[i] / scalar;
+
+        if(requires_grad_) {
+            result.parents_ = {this};
+            result.set_backward_fn([this, &result, scalar]() {
+                auto& grad_out = result.get_grad_ref();
+                for(size_t i=0;i<data_.size();++i)
+                    this->grad_[i] += grad_out[i] / scalar;  // dy/dx = 1/scalar
+            });
+        }
+
+        return result;
+    }
+
+    // Scalar - x (global operator)
+    template<typename U=size_t>
+    friend Tensor<T,N> operator-(T scalar, const Tensor<T,N>& tensor) {
+        Tensor<T,N> result(tensor.get_shape(), tensor.requires_grad());
+        if(result.requires_grad_) result.grad_.resize(result.data_.size(), T(0));
+
+        auto& out_data = result.get_data_ref();
+        const auto& data = tensor.get_data_ref();
+        for(size_t i=0;i<data.size();++i)
+            out_data[i] = scalar - data[i];
+
+        if(tensor.requires_grad_) {
+            result.parents_ = {const_cast<Tensor<T,N>*>(&tensor)};
+            result.set_backward_fn([&tensor, &result]() {
+                auto& grad_out = result.get_grad_ref();
+                auto& grad_in  = const_cast<Tensor<T,N>&>(tensor).grad_;
+                for(size_t i=0;i<grad_out.size();++i)
+                    grad_in[i] += -grad_out[i];  // dy/dx = -1
+            });
+        }
+
+        return result;
+    }
+
+
+    // Power with scalar
+    Tensor<T,N> pow(T exponent) const {
+        Tensor<T,N> result(shape__);
+        for (size_t i=0; i<data_.size(); i++)
+            result.data_[i] = std::pow(data_[i], exponent);
+
+        if (requires_grad_) {
+            result.requires_grad_ = true;
+            auto* lhs = const_cast<Tensor<T,N>*>(this);
+            result.parents_ = {lhs};
+
+            result.set_backward_fn([lhs, exponent](Tensor<T,N>* self) {
+                const auto& grad_out = self->get_grad_ref();
+                if (lhs->requires_grad_) {
+                    if (lhs->grad_.empty()) lhs->grad_.resize(lhs->data_.size(), T(0));
+                    for (size_t i=0; i<lhs->data_.size(); i++)
+                        lhs->grad_[i] += exponent * std::pow(lhs->data_[i], exponent-1) * grad_out[i];
+                }
+            });
+        }
+        return result;
     }
 
     Tensor<T,N>& operator^=(T scalar) {
-        for (auto& v : data_) {
-            v = std::pow(v, scalar);  // element-wise power
-        }
+        for (auto &v : data_) v = std::pow(v, scalar);
         return *this;
     }
 
-    Tensor<T,N> operator+(T scalar) const { Tensor<T,N> r = *this; r += scalar; return r; }
-    Tensor<T,N> operator-(T scalar) const { Tensor<T,N> r = *this; r -= scalar; return r; }
-    Tensor<T,N> operator*(T scalar) const { Tensor<T,N> r = *this; r *= scalar; return r; }
-    Tensor<T,N> operator/(T scalar) const { Tensor<T,N> r = *this; r /= scalar; return r; }
-    Tensor<T,N> operator^(T scalar) const { Tensor<T,N> r = *this; r ^= scalar; return r; }
-
-    // Sum along axis
-    Tensor<T,N-1> sum_axis(size_t axis) const {
+    // Sum along axis (N -> N-1 tensor)
+    Tensor<T, N-1> sum_axis(size_t axis)  {
         if(axis >= N) throw runtime_error("Axis out of bounds");
+
+        // Compute output shape
         array<size_t, N-1> new_shape{};
-        for(size_t i=0,j=0;i<N;i++) if(i!=axis) new_shape[j++]=shape__[i];
+        for(size_t i=0,j=0;i<N;i++) if(i!=axis) new_shape[j++] = shape__[i];
 
-        Tensor<T,N-1> out(new_shape);
-        fill(out.get_data_ref().begin(), out.get_data_ref().end(), T(0));
+        Tensor<T, N-1> out(new_shape);
+        std::fill(out.get_data_ref().begin(), out.get_data_ref().end(), T(0));
 
+        // Forward pass: sum along axis
         array<size_t,N> idx{};
         for(size_t flat=0; flat<data_.size(); ++flat){
             size_t rem = flat;
             for(int d=N-1; d>=0; --d){
-                idx[d]=rem%shape__[d];
-                rem/=shape__[d];
+                idx[d] = rem % shape__[d];
+                rem /= shape__[d];
             }
+
             array<size_t,N-1> out_idx{};
-            for(size_t i=0,j=0;i<N;i++) if(i!=axis) out_idx[j++]=idx[i];
-            size_t flat_out=0;
-            for(size_t d=0; d<N-1; ++d) flat_out+=out_idx[d]*out.get_strides()[d];
+            for(size_t i=0,j=0;i<N;i++) if(i!=axis) out_idx[j++] = idx[i];
+
+            size_t flat_out = 0;
+            const auto& out_strides = out.get_strides();
+            for(size_t d=0; d<N-1; ++d) flat_out += out_idx[d] * out_strides[d];
+
             out.get_data_ref()[flat_out] += data_[flat];
         }
+
+        // --- Autograd ---
+        if (requires_grad_) {
+            out.set_requires_grad(true);
+            auto A_ptr = this;  // capture 'this' tensor
+
+            // Capture by value to extend lifetime
+            out.set_backward_fn([A_ptr, out]() mutable {
+                if (A_ptr->requires_grad()) {
+                    // Broadcast N-1 grad to N shape
+                    auto grad_broadcasted = out.template broadcast_to<N>(A_ptr->get_shape_ref());
+                    A_ptr->add_grad(grad_broadcasted);
+                }
+            });
+        }
+
         return out;
+    }
+
+    void add_grad(const Tensor<T,N>& other) {
+        if (!requires_grad_) throw std::runtime_error("Tensor does not require grad");
+        if (other.data_.size() != data_.size())
+            throw std::runtime_error("Shape mismatch in add_grad");
+        for (size_t i = 0; i < data_.size(); i++)
+            grad_[i] += other.data_[i];
+    }
+
+    Tensor<T,N> sum_grad_axis(size_t axis) const {
+        if (!requires_grad_) throw runtime_error("Tensor does not require grad");
+        auto summed = sum_axis(axis);  // N-1 tensor
+        auto grad_broadcasted = summed.broadcast_to(shape__);  // back to original shape
+        return grad_broadcasted;
     }
 
     // Max in an axis
@@ -468,17 +780,22 @@ public:
         return out;
     }
 
-    Tensor<T,N+1> unsqueeze(size_t axis) const {
+    Tensor<T, N+1> unsqueeze(size_t axis) const {
+        static_assert(N >= 1, "Tensor rank must be >= 1 for unsqueeze");
+
         if(axis > N) throw runtime_error("Axis out of bounds");
-        array<size_t,N+1> new_shape{};
-        for(size_t i=0,j=0;i<N+1;i++){
-            if(i==axis) new_shape[i]=1;
-            else new_shape[i]=shape__[j++];
+
+        array<size_t, N+1> new_shape{};
+        for(size_t i = 0, j = 0; i <= N; i++){
+            if(i == axis) new_shape[i] = 1;
+            else new_shape[i] = this->shape__[j++];
         }
-        Tensor<T,N+1> out(new_shape);
-        out.get_data_ref() = data_;
+
+        Tensor<T, N+1> out(new_shape);
+        out.get_data_ref() = data_; // broadcasted flat copy works because 1-size dims
         return out;
     }
+
 
     // Transpose
     Tensor<T,N> transpose(const array<size_t,N>& axes) const {
@@ -497,6 +814,18 @@ public:
             out(idx_out) = data_[flat];
         }
         return out;
+    }
+
+    // Transpose only the last two dimensions
+    Tensor<T, N> transpose_last_two() const {
+        if constexpr (N < 2) throw std::runtime_error("Need at least 2 dimensions to transpose last two");
+        
+        array<size_t, N> axes{};
+        for (size_t i = 0; i < N - 2; ++i) axes[i] = i; // keep first N-2 dims
+        axes[N - 2] = N - 1;  // swap last two
+        axes[N - 1] = N - 2;
+
+        return this->transpose(axes);
     }
 
     // In Tensor<T,N>
@@ -614,10 +943,97 @@ public:
         return flat;
     }
 
+    // Ensure grad is allocated
+    void zero_grad() { 
+        if (requires_grad_) {
+            if (grad_.size() != data_.size()) 
+                grad_.resize(data_.size(), T(0));
+            else
+                std::fill(grad_.begin(), grad_.end(), T(0));
+        }
+    }
+
+    // Non-const accessor for grad
+    vector<T>& get_grad_ref() { 
+        if (!requires_grad_) throw runtime_error("Tensor does not require grad");
+        if (grad_.size() != data_.size()) grad_.resize(data_.size(), T(0));
+        return grad_;
+    }
+
+    // Const accessor (read-only)
+    const vector<T>& get_grad_ref() const { 
+        return grad_;
+    }
+
+    // Utility: collect all tensors in topological order
+    void build_topo(std::vector<Tensor<T, N>*>& topo,
+                    std::unordered_set<Tensor<T, N>*>& visited) {
+        if (visited.count(this)) return;
+        visited.insert(this);
+        for (auto* p : parents_) {
+            if (p) p->build_topo(topo, visited);
+        }
+        topo.push_back(this);
+    }
+
+    // Proper backward pass with topological sorting
+    void backward(T init_grad = T(1)) {
+        if (!requires_grad_) return;
+
+        // Collect nodes in topological order
+        std::vector<Tensor<T, N>*> topo;
+        std::unordered_set<Tensor<T, N>*> visited;
+        build_topo(topo, visited);
+
+        // Initialize all grads to zero
+        for (auto* t : topo) {
+            if (t->requires_grad_) {
+                if (t->grad_.empty()) {
+                    t->grad_.resize(t->data_.size(), T(0));
+                } else {
+                    std::fill(t->grad_.begin(), t->grad_.end(), T(0));
+                }
+            }
+        }
+
+        // Seed gradient at this output (the node on which backward() was called)
+        // find `this` in topo and set its grad to init_grad (or for non-scalar,
+        // distribute as ones; here we set all entries to init_grad)
+        if (grad_.empty()) grad_.resize(data_.size(), T(0));
+        for (auto &g : grad_) g = init_grad;
+
+        // traverse in reverse topo order and call backward_fn_ with node ptr
+        for (auto it = topo.rbegin(); it != topo.rend(); ++it) {
+            Tensor<T, N>* t = *it;
+            if (t->backward_fn_) {
+                t->backward_fn_(t);
+            }
+        }
+    }
+
+
+    Tensor<T,N> sum_axis_keepdim(size_t axis) const {
+        return this->sum_axis(axis).unsqueeze(axis);
+    }
+
+    array<size_t, N> unravel_index(size_t flat_index) const {
+        array<size_t, N> idx{};
+        size_t rem = flat_index;
+        for (int i = N - 1; i >= 0; --i) {
+            idx[i] = rem % shape__[i];
+            rem /= shape__[i];
+        }
+        return idx;
+    }
+
 private:
     vector<T> data_;
+    vector<T> grad_;
     Shape shape__;
     Shape strides_;
+    bool requires_grad_;
+
+    function<void(Tensor<T,N>*)> backward_fn_;
 
     void compute_strides() {
         size_t acc = 1;
@@ -660,95 +1076,6 @@ private:
     }
 };
 
-template<typename T, size_t NA, size_t NB>
-auto dot(const Tensor<T, NA>& A, const Tensor<T, NB>& B) {
-    // Determine batch rank: any dimensions before last two in A or B
-    constexpr size_t batch_rank = (NA > 2) ? NA - 2 : 0;
-    constexpr size_t batch_rank_B = (NB > 2) ? NB - 2 : 0;
-    constexpr size_t max_batch_rank = (batch_rank > batch_rank_B) ? batch_rank : batch_rank_B;
-    constexpr size_t OUT_RANK = max_batch_rank + 2;
-
-    const auto& A_shape = A.get_shape();
-    const auto& B_shape = B.get_shape();
-
-    std::array<size_t, OUT_RANK> out_shape{};
-
-    // Compute broadcasted batch dimensions
-    for(size_t i = 0; i < max_batch_rank; i++){
-        size_t a_dim = (i < batch_rank) ? A_shape[i] : 1;
-        size_t b_dim = (i < batch_rank_B) ? B_shape[i] : 1;
-        if(a_dim != 1 && b_dim != 1 && a_dim != b_dim)
-            throw std::runtime_error("Incompatible batch dims in dot()");
-        out_shape[i] = std::max(a_dim, b_dim);
-    }
-
-    // Last two dimensions: matmul
-    size_t A_rows = (NA >= 2) ? A_shape[NA-2] : 1;
-    size_t A_cols = (NA >= 1) ? A_shape[NA-1] : 1;
-    size_t B_rows = (NB >= 2) ? B_shape[NB-2] : 1;
-    size_t B_cols = (NB >= 1) ? B_shape[NB-1] : 1;
-
-    if(A_cols != B_rows)
-        throw std::runtime_error("Inner dimensions do not match for dot product");
-
-    out_shape[OUT_RANK-2] = A_rows;
-    out_shape[OUT_RANK-1] = B_cols;
-
-    Tensor<T, OUT_RANK> out(out_shape);
-
-    const auto& A_data = A.get_data_ref();
-    const auto& B_data = B.get_data_ref();
-    auto& out_data = out.get_data_ref();
-
-    const auto& A_strides = A.get_strides();
-    const auto& B_strides = B.get_strides();
-    const auto& out_strides = out.get_strides();
-
-    size_t total = out.size();
-    for(size_t idx = 0; idx < total; idx++){
-        std::vector<size_t> idx_multi(OUT_RANK);
-        size_t tmp = idx;
-        for(int i=int(OUT_RANK)-1; i>=0; i--){
-            idx_multi[i] = tmp % out_shape[i];
-            tmp /= out_shape[i];
-        }
-
-        T sum = 0;
-        for(size_t k = 0; k < A_cols; k++){
-            // Compute offset for A
-            size_t a_offset = 0;
-            for(size_t i = 0; i < batch_rank; i++){
-                size_t ix = (i < batch_rank) ? idx_multi[i] : 0;
-                if(A_shape[i]==1) ix = 0;
-                a_offset += ix * A_strides[i];
-            }
-            if(NA >= 2) a_offset += idx_multi[max_batch_rank] * A_strides[NA-2];
-            if(NA >= 1) a_offset += k * A_strides[NA-1];
-
-            // Compute offset for B
-            size_t b_offset = 0;
-            for(size_t i = 0; i < batch_rank_B; i++){
-                size_t ix = (i < batch_rank_B) ? idx_multi[i] : 0;
-                if(B_shape[i]==1) ix = 0;
-                b_offset += ix * B_strides[i];
-            }
-            if(NB >= 2) b_offset += k * B_strides[NB-2];
-            if(NB >= 1) b_offset += idx_multi[max_batch_rank+1] * B_strides[NB-1];
-
-            sum += A_data[a_offset] * B_data[b_offset];
-        }
-
-        // Compute output offset
-        size_t out_offset = 0;
-        for(size_t i = 0; i < OUT_RANK; i++)
-            out_offset += idx_multi[i] * out_strides[i];
-
-        out_data[out_offset] = sum;
-    }
-
-    return out;
-}
-
 // Global scalar operators
 template<typename T, size_t N>
 Tensor<T,N> operator+(T scalar, const Tensor<T,N>& tensor) {
@@ -778,4 +1105,62 @@ Tensor<T,N> operator/(T scalar, const Tensor<T,N>& tensor) {
     for (size_t i = 0; i < data.size(); ++i)
         out[i] = scalar / data[i];
     return result;
+}
+
+template<typename T, size_t NA, size_t NB>
+Tensor<T, NA + NB - 2> dot_autograd_nd(Tensor<T, NA>& A, Tensor<T, NB>& B) {
+    // --- Compute output shape ---
+    std::array<size_t, NA + NB - 2> out_shape;
+    for (size_t i = 0; i < NA - 1; ++i) out_shape[i] = A.get_shape_ref()[i];
+    for (size_t i = 1; i < NB; ++i) out_shape[NA - 1 + i - 1] = B.get_shape_ref()[i];
+
+    Tensor<T, NA + NB - 2> out(out_shape, A.requires_grad() || B.requires_grad());
+    out.zeros();
+
+    size_t K = A.get_shape_ref()[NA - 1]; // inner dimension
+
+    // --- Forward pass ---
+    for (size_t flat_out = 0; flat_out < out.size(); ++flat_out) {
+        auto out_idx = out.unravel_index(flat_out);
+        T sum = 0;
+
+        for (size_t k = 0; k < K; ++k) {
+            std::array<size_t, NA> a_idx{};
+            for (size_t i = 0; i < NA - 1; ++i) a_idx[i] = out_idx[i];
+            a_idx[NA - 1] = k;
+
+            std::array<size_t, NB> b_idx{};
+            b_idx[0] = k;
+            for (size_t i = 1; i < NB; ++i) b_idx[i] = out_idx[NA - 1 + i - 1];
+
+            sum += A(a_idx) * B(b_idx);
+        }
+        out(out_idx) = sum;
+    }
+
+    // --- Backward pass ---
+    if (out.requires_grad()) {
+        out.set_backward_fn([&A, &B, &out, K](Tensor<T, NA + NB - 2>* self) {
+            const auto& grad_out = self->get_grad_ref();
+
+            for (size_t flat_out = 0; flat_out < self->size(); ++flat_out) {
+                auto out_idx = self->unravel_index(flat_out);
+
+                for (size_t k = 0; k < K; ++k) {
+                    std::array<size_t, NA> a_idx{};
+                    for (size_t i = 0; i < NA - 1; ++i) a_idx[i] = out_idx[i];
+                    a_idx[NA - 1] = k;
+
+                    std::array<size_t, NB> b_idx{};
+                    b_idx[0] = k;
+                    for (size_t i = 1; i < NB; ++i) b_idx[i] = out_idx[NA - 1 + i - 1];
+
+                    A.get_grad_ref()[A.get_flat_index(a_idx)] += B(b_idx) * grad_out[flat_out];
+                    B.get_grad_ref()[B.get_flat_index(b_idx)] += A(a_idx) * grad_out[flat_out];
+                }
+            }
+        });
+    }
+
+    return out;
 }
