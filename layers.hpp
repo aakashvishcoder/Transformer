@@ -5,50 +5,77 @@
 
 using namespace std;
 
-
 template<typename T>
 class Dense {
 public:
-    Tensor<T, 2> weight_; // [in_features, out_features]
-    Tensor<T, 1> bias_;   // [out_features]
+    Tensor<T,2> W;
+    Tensor<T,1> b;
 
     Dense(size_t in_features, size_t out_features)
-        : weight_({in_features, out_features}), bias_({out_features}) {
-        weight_.fill_random(-0.1, 0.1);
-        bias_.zeros();
+        : W({in_features, out_features}, true),
+          b({out_features}, true)
+    {
+        // Xavier initialization
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        T limit = std::sqrt(6.0 / (in_features + out_features));
+        std::uniform_real_distribution<T> dist(-limit, limit);
+
+        for(size_t i = 0; i < in_features; ++i)
+            for(size_t j = 0; j < out_features; ++j)
+                W({i,j}) = dist(gen);
+
+        for(size_t j = 0; j < out_features; ++j)
+            b({j}) = 0;
     }
 
-    // Forward for N-dim tensor: apply matmul along last axis
-    template<size_t N>
-    Tensor<T, N> forward(const Tensor<T, N>& input) const {
-        const auto& in_shape = input.get_shape_ref();
-        if (in_shape[N-1] != weight_.get_shape_ref()[0])
-            throw runtime_error("Input last dim does not match weight rows");
+    Tensor<T,2> forward(Tensor<T,2>& X) {
+        const size_t batch = X.get_shape()[0];
+        const size_t in_features = W.get_shape()[0];
+        const size_t out_features = W.get_shape()[1];
 
-        // Output shape: same as input, last dim = weight cols
-        auto out_shape = in_shape;
-        out_shape[N-1] = weight_.get_shape_ref()[1];
-        Tensor<T, N> output(out_shape);
+        Tensor<T,2> Y({batch, out_features}, true);
 
-        const auto& in_data = input.get_data_ref();
-        const auto& w_data = weight_.get_data_ref();
-        const auto& w_shape = weight_.get_shape_ref();
-        auto& out_data = output.get_data_ref();
-        const size_t batch_size = input.size() / in_shape[N-1];
-        const size_t in_features = w_shape[0];
-        const size_t out_features = w_shape[1];
-
-        for (size_t b = 0; b < batch_size; ++b) {
-            for (size_t o = 0; o < out_features; ++o) {
+        // Forward pass
+        for(size_t i = 0; i < batch; ++i)
+            for(size_t j = 0; j < out_features; ++j) {
                 T sum = 0;
-                for (size_t i = 0; i < in_features; ++i) {
-                    sum += in_data[b * in_features + i] * w_data[i * out_features + o];
-                }
-                out_data[b * out_features + o] = sum + bias_.get_data_ref()[o];
+                for(size_t k = 0; k < in_features; ++k)
+                    sum += X({i,k}) * W({k,j});
+                Y({i,j}) = sum + b({j});
             }
-        }
 
-        return output;
+        // Backward
+        Y.set_backward_fn([this, &X, batch, in_features, out_features](Tensor<T,2>* Y_ptr){
+            auto& dY = Y_ptr->get_grad_ref(); // upstream gradient
+
+            // Grad w.r.t X
+            for(size_t i = 0; i < batch; ++i)
+                for(size_t k = 0; k < in_features; ++k) {
+                    T grad = 0;
+                    for(size_t j = 0; j < out_features; ++j)
+                        grad += dY[i*out_features + j] * W({k,j}); // use this->W implicitly
+                    X.get_grad_ref()[i*in_features + k] += grad;
+                }
+
+            // Grad w.r.t W
+            for(size_t k = 0; k < in_features; ++k)
+                for(size_t j = 0; j < out_features; ++j) {
+                    T grad = 0;
+                    for(size_t i = 0; i < batch; ++i)
+                        grad += X({i,k}) * dY[i*out_features + j];
+                    W.get_grad_ref()[k*out_features + j] += grad;
+                }
+
+            // Grad w.r.t b
+            for(size_t j = 0; j < out_features; ++j) {
+                T grad_sum = 0;
+                for(size_t i = 0; i < batch; ++i)
+                    grad_sum += dY[i*out_features + j];
+                b.get_grad_ref()[j] += grad_sum;
+            }
+        });
+        return Y;
     }
 };
 

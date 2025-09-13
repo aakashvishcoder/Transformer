@@ -61,7 +61,7 @@ public:
     const vector<T>& get_data_ref() const { return data_; }
     const Shape& get_shape_ref() const { return shape__; }
     const Shape& get_strides_ref() const { return strides_; }
-    const function<void()>& get_backward_fn() const { return backward_fn_; }
+    const std::function<void(Tensor<T,2>*)>& get_backward_fn() const { return backward_fn_; }
 
     // Setter
 
@@ -1108,7 +1108,7 @@ Tensor<T,N> operator/(T scalar, const Tensor<T,N>& tensor) {
 }
 
 template<typename T, size_t NA, size_t NB>
-Tensor<T, NA + NB - 2> dot_autograd_nd(Tensor<T, NA>& A, Tensor<T, NB>& B) {
+Tensor<T, NA + NB - 2> dot(Tensor<T, NA>& A, Tensor<T, NB>& B) {
     // --- Compute output shape ---
     std::array<size_t, NA + NB - 2> out_shape;
     for (size_t i = 0; i < NA - 1; ++i) out_shape[i] = A.get_shape_ref()[i];
