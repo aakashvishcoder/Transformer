@@ -88,19 +88,17 @@ public:
     FeedForward(size_t embed_dim, size_t hidden_dim)
         : fc1(embed_dim, hidden_dim), fc2(hidden_dim, embed_dim) {}
 
-    template<size_t N>
-    Tensor<T,N> forward(const Tensor<T,N>& x) {
-        auto out = fc1.forward(x);
+    Tensor<T,2> forward(Tensor<T,2>& x) {
+        // First dense layer
+        auto out1 = fc1.forward(x);
 
-        // ReLU activation
-        Tensor<T,N> relu_out(out.get_shape_ref());
-        const auto& in_data = out.get_data_ref();
-        auto& relu_data = relu_out.get_data_ref();
-        for (size_t i = 0; i < in_data.size(); ++i)
-            relu_data[i] = max(in_data[i], T(0));
+        // ReLU with backward support
+        auto relu_out = Activations::ReLU<T,2>(out1);
 
-        out = fc2.forward(relu_out);
-        return out;
+        // Second dense layer
+        auto out2 = fc2.forward(relu_out);
+
+        return out2; // backward flows through fc2 → ReLU → fc1 automatically
     }
 };
 

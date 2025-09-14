@@ -19,23 +19,26 @@ public:
     // Constructors
     Tensor() = default;
 
-    Tensor(const Shape& shape_, bool requires_grad = false)
-        : shape__(shape_), requires_grad_(requires_grad) {
-        compute_strides();
-        size_t total_size = 1;
-        for (auto s : shape__) total_size *= s;
-        data_.resize(total_size);
-        if (requires_grad_) grad_.resize(total_size, T(0));
+    // Constructor: shape only, optionally allocate grad
+    Tensor(const Shape& shape, bool requires_grad = false)
+        : shape__(shape), requires_grad_(requires_grad)
+    {
+        size_t total = 1;
+        for (auto s : shape__) total *= s;
+        data_.resize(total, T(0));
+        grad_.resize(total, T(0)); // always allocate grad safely
     }
 
-    Tensor(const Shape& shape_, const std::vector<T>& data, bool requires_grad = false)
-        : shape__(shape_), data_(data), requires_grad_(requires_grad) {
-        compute_strides();
+    // Constructor: shape + data
+    Tensor(const Shape& shape, const std::vector<T>& data, bool requires_grad = false)
+        : shape__(shape), data_(data), requires_grad_(requires_grad)
+    {
         size_t expected_size = 1;
         for (auto s : shape__) expected_size *= s;
         if (expected_size != data_.size())
             throw std::runtime_error("Data size does not match shape");
-        if (requires_grad_) grad_.resize(data_.size(), T(0));
+
+        grad_.resize(data_.size(), T(0)); // always allocate grad safely
     }
 
     // Getters
@@ -61,7 +64,12 @@ public:
     const vector<T>& get_data_ref() const { return data_; }
     const Shape& get_shape_ref() const { return shape__; }
     const Shape& get_strides_ref() const { return strides_; }
-    const std::function<void(Tensor<T,2>*)>& get_backward_fn() const { return backward_fn_; }
+    const std::function<void(Tensor<T,N>*)>& get_backward_fn() const { return backward_fn_; }
+
+    void ensure_grad() {
+        if (grad_.empty())
+            grad_.resize(data_.size(), T(0));
+    }
 
     // Setter
 
@@ -589,7 +597,7 @@ public:
             auto A_ptr = this;  // capture 'this' tensor
 
             // Capture by value to extend lifetime
-            out.set_backward_fn([A_ptr, out]() mutable {
+            out.set_backward_fn([this,A_ptr, out]() mutable {
                 if (A_ptr->requires_grad()) {
                     // Broadcast N-1 grad to N shape
                     auto grad_broadcasted = out.template broadcast_to<N>(A_ptr->get_shape_ref());
@@ -1010,7 +1018,6 @@ public:
             }
         }
     }
-
 
     Tensor<T,N> sum_axis_keepdim(size_t axis) const {
         return this->sum_axis(axis).unsqueeze(axis);
