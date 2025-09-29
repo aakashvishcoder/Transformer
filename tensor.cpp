@@ -1,61 +1,34 @@
-#include <iostream>
 #include "tensor.hpp"
 #include "layers.hpp"
-
-// Include your FeedForward class
+#include "activations.hpp"
+#include <iostream>
+#include <memory>
 
 int main() {
     using T = float;
 
-    // --- Input tensor (batch=2, embed_dim=3) ---
-    Tensor<T,2> x({2,3}, true); // requires grad
-    auto& x_data = x.get_data_ref();
-    x_data = {1.0, -2.0, 0.0,
-              -0.5, 2.0, -3.0};
+    auto x = std::make_shared<Tensor<T,2>>(std::array<size_t,2>{2,3}, true);
+    (*x)({0,0}) = 1.0f; (*x)({0,1}) = -2.0f; (*x)({0,2}) = 3.0f;
+    (*x)({1,0}) = -1.0f; (*x)({1,1}) = 0.0f; (*x)({1,2}) = 2.0f;
 
-    // --- Create FeedForward network ---
-    FeedForward<T> ff(3, 4); // embed_dim=3, hidden_dim=4
-    ff.fc1.W.set_requires_grad(true);
-    ff.fc1.b.set_requires_grad(true);
-    ff.fc2.W.set_requires_grad(true);
-    ff.fc2.b.set_requires_grad(true);
-
-    // --- Forward pass ---
-    std::cout << "x shape: " << x.get_shape()[0] << " x " << x.get_shape()[1] << std::endl;
-    std::cout << "fc1 W shape: " << ff.fc1.W.get_shape()[0] << " x " << ff.fc1.W.get_shape()[1] << std::endl;
-    auto y = ff.forward(x);
+    FeedForward<T> ff(3,4);
+    auto out = ff.forward(x);
 
     std::cout << "Forward output:\n";
-    for (auto v : y.get_data_ref()) std::cout << v << " ";
+    for(size_t i=0;i<out->size();++i)
+        std::cout << out->get_data()[i] << " ";
     std::cout << "\n";
 
-    // --- Set upstream gradient (dL/dy = 1) ---
-    auto& grad = y.get_grad_ref();
-    grad.assign(grad.size(), 1.0f);
+    // Backward using sum(out) as loss
+    out->zero_grad();
+    x->zero_grad();
+    for(size_t i=0;i<out->size();++i)
+        out->get_grad_ref()[i] = 1.0f;
 
-    // --- Backward pass ---
-    y.backward();
+    out->backward();
 
-    // --- Gradients ---
-    std::cout << "Gradient wrt input x:\n";
-    for (auto g : x.get_grad_ref()) std::cout << g << " ";
+    std::cout << "Gradients w.r.t input x:\n";
+    for(size_t i=0;i<x->size();++i)
+        std::cout << x->get_grad_ref()[i] << " ";
     std::cout << "\n";
-
-    std::cout << "Gradient wrt fc1 weights W:\n";
-    for (auto g : ff.fc1.W.get_grad_ref()) std::cout << g << " ";
-    std::cout << "\n";
-
-    std::cout << "Gradient wrt fc1 biases b:\n";
-    for (auto g : ff.fc1.b.get_grad_ref()) std::cout << g << " ";
-    std::cout << "\n";
-
-    std::cout << "Gradient wrt fc2 weights W:\n";
-    for (auto g : ff.fc2.W.get_grad_ref()) std::cout << g << " ";
-    std::cout << "\n";
-
-    std::cout << "Gradient wrt fc2 biases b:\n";
-    for (auto g : ff.fc2.b.get_grad_ref()) std::cout << g << " ";
-    std::cout << "\n";
-
-    return 0;
 }

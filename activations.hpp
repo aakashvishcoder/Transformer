@@ -6,30 +6,28 @@
 struct Activations {
     // In-place ReLU
     template<typename T, size_t N>
-    static Tensor<T,N> ReLU(Tensor<T,N>& X) {
-        Tensor<T,N> result(X.get_shape_ref(), X.requires_grad()); // output requires grad if input does
-        auto& data = X.get_data_ref();
-        auto& result_data = result.get_data_ref();
+    static std::shared_ptr<Tensor<T,N>> ReLU(std::shared_ptr<Tensor<T,N>> X) {
+        auto result = std::make_shared<Tensor<T,N>>(X->get_shape_ref(), X->requires_grad());
 
-        // Forward pass
+        auto& data = X->get_data_ref();
+        auto& result_data = result->get_data_ref();
+
         for (size_t i = 0; i < data.size(); ++i)
             result_data[i] = (data[i] > T(0)) ? data[i] : T(0);
 
-        // Backward pass
-        result.set_backward_fn([&X](Tensor<T,N>* dResult) {
-            if (!X.requires_grad()) return;
-
-            auto& dY = dResult->get_grad_ref(); // upstream gradient
-            auto& X_grad = X.get_grad_ref();    // gradient wrt input
-            const auto& X_data = X.get_data_ref();
-
-            for (size_t i = 0; i < dY.size(); ++i)
-                X_grad[i] += (X_data[i] > T(0)) ? dY[i] : T(0);
-        });
+        if (X->requires_grad()) {
+            result->set_backward_fn([X, result](){
+                auto& dY = result->get_grad_ref();
+                auto& X_grad = X->get_grad_ref();
+                const auto& X_data = X->get_data_ref();
+                for (size_t i = 0; i < dY.size(); ++i)
+                    X_grad[i] += (X_data[i] > T(0)) ? dY[i] : T(0);
+            });
+        }
 
         return result;
     }
-
+        
     // In-place LeakyReLU
     template<typename T, size_t N>
     static Tensor<T,N> LeakyReLU(Tensor<T,N>& X, T alpha = T(0.01)) {
