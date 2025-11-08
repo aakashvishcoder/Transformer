@@ -90,8 +90,11 @@ public:
 
     void backward() {
         if (shape.empty()) {
-            if (grad.empty()) grad = {T(1)};
-            else if (grad[0] == T(0)) grad[0] = T(1);
+            if (grad.size() != 1) {
+                grad = {T(1)};
+            } else if (grad[0] == T(0)) {
+                grad[0] = T(1);
+            }
         }
         std::unordered_set<void*> visited;
         backward_recursive(visited);
@@ -116,13 +119,14 @@ public:
 
 private:
     void backward_recursive(std::unordered_set<void*>& visited) {
+        std::cout << "Running backward on tensor with shape {";
+        for (auto s : shape) std::cout << s << " ";
+        std::cout << "}, grad.size() = " << grad.size() << std::endl;
         if (visited.count(this)) return;
         visited.insert(this);
-
         if (backward_fn) {
             backward_fn(grad);
         }
-
         for (Tensor* parent : parents) {
             parent->backward_recursive(visited);
         }
@@ -690,9 +694,10 @@ public:
     Tensor softmax(size_t dim = -1) {
         if (dim < 0) dim += shape.size();
         auto max_vals = max_axis(dim, true);
-        auto exp_self = exp();
-        auto sum_exp = exp_self.sum_axis(dim, true);
-        return exp_self / sum_exp;
+        auto shifted = *this - max_vals;
+        auto exp_shifted = shifted.exp();
+        auto sum_exp = exp_shifted.sum_axis(dim, true);
+        return exp_shifted / sum_exp;
     }
 };
 
@@ -798,6 +803,26 @@ public:
         auto out = matmul(x, weight.transpose_last_two());
         if (bias.data.size() > 0) out = out + bias;
         return out;
+    }
+};
+
+template<typename T>
+class LayerNorm {
+public:
+    Tensor<T> gamma, beta;
+    double epsilon = 1e-5;
+
+    LayerNorm(size_t normalized_shape) 
+        : gamma({normalized_shape}, true), beta({normalized_shape}, true) {
+            gamma.ones();
+            beta.zeros();
+    }
+
+    Tensor<T> forward(const Tensor<T>& x) {
+        auto mean = x.mean_axis(-1, true);
+        auto var = (x - mean).pow(2).mean_axis(-1, true);
+        auto x_norm = (x - mean) / (var + epsilon).sqrt();
+        return gamma * x_norm + beta;
     }
 };
 

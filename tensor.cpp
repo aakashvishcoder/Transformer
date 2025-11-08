@@ -3,13 +3,16 @@
 #include <memory>
 
 int main() {
-    // Test 1: Basic autograd
-    Tensor<float> a({2,3}, true);
-    auto b = a.exp().sum();
-    b.backward(); // Should not crash
-
-    // Test 2: Matmul
-    Tensor<float> x({1, 10}, true), w({5, 10}, true);
-    auto y = matmul(x, w.transpose_last_two()); // {1,5}
-    y.sum().backward();
+    Tensor<float> a({2, 3}, true);
+    a.data = {1, 2, 3, 4, 5, 6};
+    
+    // Store the intermediate tensor explicitly
+    auto exp_result = a.exp();    // This keeps the tensor alive
+    auto sum_result = exp_result.sum();
+    sum_result.backward();
+    
+    a.print();
+    std::cout << "Grad: ";
+    for (auto g : a.grad) std::cout << g << " ";
+    std::cout << std::endl;
 }
