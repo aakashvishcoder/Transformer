@@ -134,25 +134,50 @@ private:
 
 public:
     Tensor operator+(const Tensor& other) {
-        assert(shape == other.shape && "Broadcasting not fully supported in backward yet");
-        Tensor out(shape, requires_grad || other.requires_grad);
-        for (size_t i = 0; i < data.size(); ++i) {
-            out.data[i] = data[i] + other.data[i];
+        if (shape == other.shape) {
+            Tensor out(shape, requires_grad || other.requires_grad);
+            for (size_t i = 0; i < data.size(); ++i) {
+                out.data[i] = data[i] + other.data[i];
+            }
+            if (out.requires_grad) {
+                Tensor* self = this;
+                Tensor* rhs = const_cast<Tensor*>(&other);
+                out.parents = {self, rhs};
+                out.backward_fn = [self, rhs](const std::vector<T>& upstream_grad) {
+                    if (self->requires_grad) self->accumulate_grad(upstream_grad);
+                    if (rhs->requires_grad) rhs->accumulate_grad(upstream_grad);
+                };
+            }
+            return out;
         }
-        if (out.requires_grad) {
-            Tensor* self = this;
-            Tensor* rhs = const_cast<Tensor*>(&other);
-            out.parents = {self, rhs};
-            out.backward_fn = [self, rhs](const std::vector<T>& upstream_grad) {
-                if (self->requires_grad) {
-                    self->accumulate_grad(upstream_grad);
-                }
-                if (rhs->requires_grad) {
-                    rhs->accumulate_grad(upstream_grad);
-                }
-            };
+        else if (other.ndim() == 1 && ndim() >= 2 && shape.back() == other.shape[0]) {
+            Tensor out(shape, requires_grad || other.requires_grad);
+            size_t last_dim = shape.back();
+            for (size_t i = 0; i < data.size(); ++i) {
+                out.data[i] = data[i] + other.data[i % last_dim];
+            }
+            if (out.requires_grad) {
+                Tensor* self = this;
+                Tensor* rhs = const_cast<Tensor*>(&other);
+                out.parents = {self, rhs};
+                out.backward_fn = [self, rhs, last_dim](const std::vector<T>& upstream_grad) {
+                    if (self->requires_grad) {
+                        self->accumulate_grad(upstream_grad);
+                    }
+                    if (rhs->requires_grad) {
+                        std::vector<T> bias_grad(rhs->data.size(), T(0));
+                        for (size_t i = 0; i < upstream_grad.size(); ++i) {
+                            bias_grad[i % last_dim] += upstream_grad[i];
+                        }
+                        rhs->accumulate_grad(bias_grad);
+                    }
+                };
+            }
+            return out;
         }
-        return out;
+        else {
+            throw std::invalid_argument("Broadcasting not supported for these shapes");
+        }
     }
 
     Tensor operator-(const Tensor& other) {
@@ -789,19 +814,29 @@ Tensor<T> operator*(T scalar, const Tensor<T>& t) {
 
 template<typename T>
 class Linear {
-public: 
     Tensor<T> weight;
     Tensor<T> bias;
+    bool use_bias;
 
-    Linear(size_t in_features, size_t out_features, bool bias = true) 
-        : weight({out_features, in_features}, true), bias(bias ? Tensor<T>({out_features}, true) : Tensor<T>()) {
-        weight.fill_random(-0.1, 0.1);
-        if (bias) this->bias.zeros();
-    }
-
+public:
+    Linear(size_t in_features, size_t out_features, bool use_bias = true) 
+        : weight({out_features, in_features}, true),
+          bias(use_bias ? Tensor<T>({out_features}, true) : Tensor<T>()),
+          use_bias(use_bias) {
+            T limit = std::sqrt(T(6) / T(in_features + out_features));
+            weight.fill_random(-limit, limit);
+            if (use_bias) {
+                bias.zeros();
+            }
+          }
+    
     Tensor<T> forward(const Tensor<T>& x) {
-        auto out = matmul(x, weight.transpose_last_two());
-        if (bias.data.size() > 0) out = out + bias;
+        auto weight_t = weight.transpose({1, 0});
+        auto out = matmul(x, weight_t);
+
+        if (use_bias) {
+            out = out + bias;
+        }
         return out;
     }
 };
@@ -825,4 +860,28 @@ public:
         return gamma * x_norm + beta;
     }
 };
+
+// class MultiHeadAttention {
+//     Linear q_proj, k_proj, v_proj, out_proj;
+//     size_t n_heads, head_dim;
+
+// public:
+//     MultiHeadAttention(size_t embed_dim, size_t n_heads)
+//         : q_proj(embed_dim, embed_dim), k_proj(embed_dim, embed_dim),
+//           v_proj(embed_dim, embed_dim), out_proj(embed_dim, embed_dim),
+//           n_heads(n_heads), head_dim(embed_dim / n_heads) {}
+    
+//     Tensor<float> forward(const Tensor<float>& x) {
+//         auto Q = q_proj.forward(x);
+//         auto K = k_proj.forward(x);
+//         auto V = v_proj.forward(x);
+
+//         auto Q_split = Q.view({x.shape[0], x.shape[1], n_heads, head_dim})
+//             .transpose({0, 2, 1, 3});
+//         auto K_split = K.view({x.shape[0], x.shape[1], n_heads, head_dim})
+//             .transpose({0, 2, 1, 3});
+//         auto V_split = V.view({x.shape[0], x.shape[1], n_heads, head_dim})
+//             .transpose({0, 2, 1, 3});
+//     }
+// };
 
