@@ -149,6 +149,60 @@ public:
         return out;
     }
 
+    Tensor operator-(const Tensor& other) {
+        assert(shape == other.shape);
+        Tensor out(shape, requires_grad || other.requires_grad);
+        for (size_t i = 0; i < data.size(); ++i) {
+            out.data[i] = data[i] - other.data[i];
+        }
+        if (out.requires_grad) {
+            Tensor* self = this;
+            Tensor* rhs = const_cast<Tensor*>(&other);
+            out.parents = {self, rhs};
+            out.backward_fn = [self, rhs](const std::vector<T>& upstream_grad) {
+                if (self->requires_grad) self->accumulate_grad(upstream_grad);
+                if (rhs->requires_grad) {
+                    std::vector<T> neg_grad(upstream_grad.size());
+                    for (size_t i = 0; i < upstream_grad.size(); ++i) {
+                        neg_grad[i] = -upstream_grad[i];
+                    }
+                    rhs->accumulate_grad(neg_grad);
+                }
+            };
+        }
+        return out;
+    }
+
+    Tensor operator/(const Tensor& other) {
+        assert(shape == other.shape);
+        Tensor out(shape, requires_grad || other.requires_grad);
+        for (size_t i = 0; i < data.size(); ++i) {
+            out.data[i] = data[i] / other.data[i];
+        }
+        if (out.requires_grad) {
+            Tensor* self = this;
+            Tensor* rhs = const_cast<Tensor*>(&other);
+            out.parents = {self, rhs};
+            out.backward_fn = [self, rhs, out_data = out.data](const std::vector<T>& upstream_grad) {
+                if (self->requires_grad) {
+                    std::vector<T> grad_self(upstream_grad.size());
+                    for (size_t i = 0; i < upstream_grad.size(); ++i) {
+                        grad_self[i] = upstream_grad[i] / rhs->data[i];
+                    }
+                    self->accumulate_grad(grad_self);
+                }
+                if (rhs->requires_grad) {
+                    std::vector<T> grad_rhs(upstream_grad.size());
+                    for (size_t i = 0; i < upstream_grad.size(); ++i) {
+                        grad_rhs[i] = -upstream_grad[i] * out_data[i] / rhs->data[i];
+                    }
+                    rhs->accumulate_grad(grad_rhs);
+                }
+            };
+        }
+        return out;
+    }
+
     static std::vector<size_t> broadcast_shape(const std::vector<size_t>& a, const std::vector<size_t>& b) {
         size_t ndim = std::max(a.size(), b.size());
         std::vector<size_t> a_pad(ndim - a.size(), 1);
@@ -714,6 +768,11 @@ Tensor<T> matmul(const Tensor<T>& a, const Tensor<T>& b) {
         }
     }
 };
+
+template<typename T>
+Tensor<T> operator*(T scalar, const Tensor<T>& t) {
+    return t * scalar;
+}
 
 template<typename T>
 class Linear {
