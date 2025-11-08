@@ -1,4 +1,6 @@
 #pragma once
+#include <random>
+#include <limits>
 #include <vector>
 #include <functional>
 #include <numeric>
@@ -423,7 +425,7 @@ public:
         if (requires_grad) {
             Tensor* self = this;
             out.parents = {self};
-            out.backward_fn = [self, dim, reduce_size, keepdim, out_shape = out.shape](const std::vector<T>& upstream_grad) {
+            out.backward_fn = [self, dim, reduce_size, keepdim, out_shape = out.shape, &out](const std::vector<T>& upstream_grad) {
                 std::vector<T> self_grad(self->data.size(), T(0));
                 std::vector<size_t> idx(self->shape.size());
                 auto recurse_grad = [&](auto&& self_g, size_t d) -> void {
@@ -629,6 +631,9 @@ public:
         }
 
         Tensor out(new_shape, requires_grad);
+        for (auto& x : out.data) x = -std::numeric_limits<T>::infinity();
+
+        std::vector<size_t> idx(shape.size());
         auto recurse = [&](auto&& self, size_t d) -> void {
             if (d == shape.size()) {
                 std::vector<size_t> out_idx = idx;
@@ -647,11 +652,11 @@ public:
             }
         };
         recurse(recurse, 0);
-
+        
         if (requires_grad) {
             Tensor* self = this;
             out.parents = {self};
-            out.backward_fn = [self, dim , keepdim, out_shape = out.shape](const std::vector<T>& upstream_grad) {
+            out.backward_fn = [self, dim, keepdim, out_shape = out.shape, &out](const std::vector<T>& upstream_grad) {
                 std::vector<T> self_grad(self->data.size(), T(0));
                 std::vector<size_t> idx(self->shape.size());
                 auto recurse_grad = [&](auto&& self_g, size_t d) -> void {
@@ -666,7 +671,7 @@ public:
                         size_t out_offset = multi_index_to_offset(out_idx, out_strides);
 
                         T max_val = out(out_idx);
-                        if (std::abs(self->operator() - max_val) < 1e-6) {
+                        if (std::abs(self->operator()(idx) - max_val) < 1e-6) {
                             self_grad[multi_index_to_offset(idx, self->strides)] = upstream_grad[out_offset];
                         }
                         return;
@@ -766,6 +771,9 @@ Tensor<T> matmul(const Tensor<T>& a, const Tensor<T>& b) {
                 }
             };
         }
+        return out;
+    } else {
+        throw std::invalid_argument("matmul only supports 2D or 3D tensors");
     }
 };
 
