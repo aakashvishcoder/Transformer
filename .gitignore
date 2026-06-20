@@ -1,0 +1,24 @@
+# CMake build outputs
+build/
+build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Compiled binaries and objects
+*.exe
+*.obj
+*.o
+*.a
+*.so
+*.dll
+
+# Compiler intermediate outputs
+*.ii
+*.s
+
+# Editor/OS noise
+.vscode/*.log
+.DS_Store
+Thumbs.db

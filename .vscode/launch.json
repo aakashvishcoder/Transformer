@@ -1,19 +1,32 @@
 {
-    "version": "0.2.0",
-    "configurations": [
+    "version": "2.0.0",
+    "tasks": [
         {
-            "name": "Run C++ LLM",
-            "type": "cppdbg",
-            "request": "launch",
-            "program": "${fileDirname}\\${fileBasenameNoExtension}.exe",
-            "args": [],
-            "stopAtEntry": false,
-            "cwd": "${fileDirname}",
-            "environment": [],
-            "preLaunchTask": "Build C++ LLM",
-            "externalConsole": true,
-            "MIMode": "gdb",
-            "miDebuggerPath": "C:\\msys64\\ucrt64\\bin\\gdb.exe"
+            "label": "Kill tensor.exe",
+            "type": "shell",
+            "command": "taskkill /f /im tensor.exe 2>nul || exit 0",
+            "windows": {
+                "command": "taskkill /f /im tensor.exe 2>nul || exit 0"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Build C++ LLM",
+            "type": "shell",
+            "command": "g++",
+            "args": [
+                "-fdiagnostics-color=always",
+                "-g",
+                "${workspaceFolder}/tensor.cpp",
+                "-o",
+                "${workspaceFolder}/tensor.exe"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "dependsOn": ["Kill tensor.exe"],
+            "problemMatcher": "$gcc"
         }
     ]
 }
