@@ -10,7 +10,7 @@ This project now includes:
 - Basic mixed-precision data types (`Float16`, `BFloat16`)
 - Minimal autograd graph with backward support for core ops
 - SGD optimizer utility with optional weight decay and grad clipping
-- Tiny transformer-style inference demo (char tokenizer + causal attention + autoregressive generation)
+- Tiny transformer-style demo (char tokenizer + causal attention + one-block training/generation)
 - CMake-based test suite with numerical gradient checks
 
 ## Current Scope
@@ -66,12 +66,15 @@ Run transformer-style generation demo:
 ./build-mingw/toy_llm.exe
 ```
 
+The demo now includes a tiny next-token training loop and prints loss drop before generation.
+
 ## Project Layout
 
 - `tensor_minimal.hpp`: tensor core, autograd, mixed precision, optimizer
 - `tensor.cpp`: tiny training demo executable
 - `toy_llm.cpp`: tiny transformer-style inference/generation executable
 - `tests/simple_test.cpp`: functional + gradient validation suite
+- `tests/toy_llm_test.cpp`: causal mask + training-loss + deterministic-generation tests
 - `CMakeLists.txt`: build + test config
 
 ## Next Suggested Milestones

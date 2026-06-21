@@ -36,5 +36,14 @@ if(OpenMP_CXX_FOUND)
 	target_compile_definitions(tensor_tests PRIVATE TENSOR_OPENMP_ENABLED=1)
 endif()
 
+add_executable(toy_llm_tests tests/toy_llm_test.cpp)
+target_link_libraries(toy_llm_tests PRIVATE tensor)
+target_compile_options(toy_llm_tests PRIVATE -Wall -Wextra)
+if(OpenMP_CXX_FOUND)
+	target_link_libraries(toy_llm_tests PRIVATE OpenMP::OpenMP_CXX)
+	target_compile_definitions(toy_llm_tests PRIVATE TENSOR_OPENMP_ENABLED=1)
+endif()
+
 # Register tests
 add_test(NAME TensorTests COMMAND tensor_tests)
+add_test(NAME ToyLLMTests COMMAND toy_llm_tests)
