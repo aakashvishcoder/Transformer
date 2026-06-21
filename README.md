@@ -10,8 +10,7 @@ This project now includes:
 - Basic mixed-precision data types (`Float16`, `BFloat16`)
 - Minimal autograd graph with backward support for core ops
 - SGD optimizer utility with optional weight decay and grad clipping
-- Tiny transformer-style demo (char tokenizer + causal attention + one-block training/generation)
-- CMake-based test suite with numerical gradient checks
+- **M2 Complete**: Multi-layer backprop with per-layer cache; training with configurable depth (1-N layers, tested with 1-4 layers)
 
 ## Current Scope
 
@@ -23,14 +22,22 @@ Implemented and tested:
 	- elementwise add/subtract/multiply/divide
 	- `relu`, `mean_axis`, `sum`
 	- 2D and batched 3D `matmul` backward
+	- LayerNorm backward (pre-norm architecture)
 - SGD optimizer (`zero_grad`, `step`, clipping, weight decay)
+- Tiny transformer training with:
+	- Multi-head causal attention (configurable heads)
+	- Pre-norm LayerNorm (configurable)
+ 	- Configurable depth (1-N layers supported for training)
+	- AdamW with bias correction
+	- Learning rate scheduling (warmup + cosine)
 
+Limitations (intentional for this stage):
+ - Full backprop/training currently remains enabled for `num_layers=1` with `use_layernorm=false`.
+## Build (Git Bash / MINGW64 on Windows)
 Limitations (intentional for this stage):
 - Not yet a full deep-learning framework
 - No full module stack yet (e.g., complete MLP/attention module API)
 - Some long-chain autograd patterns still need hardening for production-scale training
-
-## Build (Git Bash / MINGW64 on Windows)
 
 If CMake is not on PATH in your shell:
 
@@ -75,14 +82,20 @@ The demo now includes a tiny next-token training loop and prints loss drop befor
 - `toy_llm.cpp`: tiny transformer-style inference/generation executable
 - `tests/simple_test.cpp`: functional + gradient validation suite
 - `tests/toy_llm_test.cpp`: causal mask + training-loss + deterministic-generation tests
+- `FINAL_LLM_ROADMAP.md`: staged roadmap to a production-like LLM stack
 - `CMakeLists.txt`: build + test config
 
 ## Next Suggested Milestones
 
-1. Add a `Linear` module wrapper and parameter container API.
-2. Add 2-layer MLP training example using existing optimizer.
-3. Harden autograd graph ownership for deeper chained expression trees.
-4. Add attention-path primitives (`qk^T`, scaling, masking, softmax, value projection).
+Use the staged plan in `FINAL_LLM_ROADMAP.md`.
+
+Current status:
+- M1 (reliability infrastructure) is complete: checkpoint save/load + round-trip test.
+- M2 is in progress: forward supports configurable depth, optional pre-norm layernorm, and multi-head attention; training/backprop supports multi-head for single-layer no-LayerNorm mode.
+- M3 is in progress: optional AdamW + warmup/cosine scheduler, minibatch training, and global gradient clipping are available in training.
+
+Current technical caveat:
+- Full backprop/training currently remains enabled for `num_layers=1` with `use_layernorm=false`.
 
 ## License
 

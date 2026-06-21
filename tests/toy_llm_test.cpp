@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdio>
 #include <cmath>
 #include <functional>
 #include <iostream>
@@ -62,6 +63,58 @@ struct ToyTestRunner {
 int main() {
     ToyTestRunner runner;
 
+    runner.run("LayerNorm rows produce near-zero mean", [] {
+        std::vector<float> in = {
+            1.0f, 2.0f, 3.0f,
+            2.0f, 2.0f, 2.0f
+        };
+        std::vector<float> out;
+        TinyTransformer::layernorm_rows(in, 2, 3, out);
+        assert(out.size() == in.size());
+
+        for (int r = 0; r < 2; ++r) {
+            float mean = 0.0f;
+            for (int c = 0; c < 3; ++c) {
+                mean += out[static_cast<size_t>(r * 3 + c)];
+            }
+            mean /= 3.0f;
+            assert(std::fabs(mean) < 1e-4f);
+        }
+    });
+
+    runner.run("Forward supports multi-layer pre-norm mode", [] {
+        std::string corpus = "abcdabcdabcd";
+        CharTokenizer tok(corpus);
+        TinyTransformer model(tok.vocab_size(), 8, 16, 16, 404, 2, true);
+
+        std::vector<int> ids = tok.encode("abcd");
+        std::vector<float> logits = model.forward(ids);
+        assert(static_cast<int>(logits.size()) == tok.vocab_size());
+
+        // Deterministic for fixed weights and same input.
+        std::vector<float> logits2 = model.forward(ids);
+        assert(logits == logits2);
+    });
+
+    runner.run("Forward supports multi-head mode", [] {
+        std::string corpus = "abcdabcdabcd";
+        CharTokenizer tok(corpus);
+        TinyTransformer model(tok.vocab_size(), 8, 16, 16, 505, 1, false, 2);
+
+        std::vector<int> ids = tok.encode("abcd");
+        std::vector<float> logits = model.forward(ids);
+        assert(static_cast<int>(logits.size()) == tok.vocab_size());
+
+        // Ensure cached attention rows still normalize after head-averaging.
+        TinyTransformer::ForwardCache cache = model.forward_cache(ids);
+        const int seq = static_cast<int>(ids.size());
+        for (int t = 0; t < seq; ++t) {
+            float sum = 0.0f;
+            for (int j = 0; j < seq; ++j) sum += cache.attn_weights()[static_cast<size_t>(t * seq + j)];
+            assert(std::fabs(sum - 1.0f) < 1e-4f);
+        }
+    });
+
     runner.run("Causal mask is strictly lower-triangular", [] {
         CharTokenizer tok("abc abc");
         TinyTransformer model(tok.vocab_size(), 8, 16, 16, 42);
@@ -73,7 +126,7 @@ int main() {
         for (int t = 0; t < seq; ++t) {
             float row_sum = 0.0f;
             for (int j = 0; j < seq; ++j) {
-                float w = cache.attn_weights[static_cast<size_t>(t * seq + j)];
+                float w = cache.attn_weights()[static_cast<size_t>(t * seq + j)];
                 row_sum += w;
                 if (j > t) {
                     assert(std::fabs(w) < 1e-7f);
@@ -92,7 +145,7 @@ int main() {
         TinyTransformer::ForwardCache cache = model.forward_cache(ids);
         TinyTransformer::OutputHeadBackward grads = model.backprop_output_head(cache, ids);
 
-        assert(grads.grad_h2.size() == cache.h2.size());
+        assert(grads.grad_h2.size() == cache.h2().size());
         assert(grads.grad_out_proj.size() == static_cast<size_t>(model.d_model * model.vocab));
         assert(grads.grad_out_bias.size() == static_cast<size_t>(model.vocab));
 
@@ -115,7 +168,7 @@ int main() {
 
         assert(ffn_grads.grad_w1.size() == model.w1.size());
         assert(ffn_grads.grad_w2.size() == model.w2.size());
-        assert(ffn_grads.grad_h1.size() == cache.h1.size());
+        assert(ffn_grads.grad_h1.size() == cache.h1().size());
 
         float w1_norm = 0.0f;
         float w2_norm = 0.0f;
@@ -138,7 +191,7 @@ int main() {
         TinyTransformer::AttentionProjBackward attn_grads = model.backprop_attention_proj(cache, ffn_grads.grad_h1);
 
         assert(attn_grads.grad_wo.size() == model.wo.size());
-        assert(attn_grads.grad_attn_out.size() == cache.attn_out.size());
+        assert(attn_grads.grad_attn_out.size() == cache.attn_out().size());
 
         float wo_norm = 0.0f;
         float attn_out_norm = 0.0f;
@@ -164,7 +217,7 @@ int main() {
         assert(core_grads.grad_wq.size() == model.wq.size());
         assert(core_grads.grad_wk.size() == model.wk.size());
         assert(core_grads.grad_wv.size() == model.wv.size());
-        assert(core_grads.grad_x.size() == cache.x.size());
+        assert(core_grads.grad_x.size() == cache.x().size());
 
         float q_norm = 0.0f;
         float k_norm = 0.0f;
@@ -302,6 +355,92 @@ int main() {
         assert(std::fabs(g_op - n_op) < tol_out);
     });
 
+    runner.run("Finite difference gradients for multi-head attention core", [] {
+        std::string corpus = "abcdabcdabcd";
+        CharTokenizer tok(corpus);
+        TinyTransformer model(tok.vocab_size(), 8, 10, 16, 444, 1, false, 2);
+
+        std::vector<int> ids = tok.encode("abcd");
+        std::vector<int> targets = tok.encode("bcda");
+
+        TinyTransformer::ForwardCache cache = model.forward_cache(ids);
+        TinyTransformer::OutputHeadBackward head_grads = model.backprop_output_head(cache, targets);
+        TinyTransformer::FFNBackward ffn_grads = model.backprop_ffn(cache, head_grads.grad_h2);
+        TinyTransformer::AttentionProjBackward attn_grads = model.backprop_attention_proj(cache, ffn_grads.grad_h1);
+        TinyTransformer::AttentionCoreBackward core_grads = model.backprop_attention_core(cache, attn_grads.grad_attn_out);
+
+        auto loss_fn = [&]() {
+            return single_window_loss(model, ids, targets);
+        };
+
+        size_t idx_wq = argmax_abs_index(core_grads.grad_wq);
+        size_t idx_wk = argmax_abs_index(core_grads.grad_wk);
+        size_t idx_wv = argmax_abs_index(core_grads.grad_wv);
+
+        float g_wq = core_grads.grad_wq[idx_wq];
+        float g_wk = core_grads.grad_wk[idx_wk];
+        float g_wv = core_grads.grad_wv[idx_wv];
+
+        const float inv_seq = 1.0f / static_cast<float>(ids.size());
+        g_wq *= inv_seq;
+        g_wk *= inv_seq;
+        g_wv *= inv_seq;
+
+        assert(std::fabs(g_wq) > 1e-7f);
+        assert(std::fabs(g_wk) > 1e-7f);
+        assert(std::fabs(g_wv) > 1e-7f);
+
+        float n_wq = finite_difference_param(model.wq, idx_wq, loss_fn);
+        float n_wk = finite_difference_param(model.wk, idx_wk, loss_fn);
+        float n_wv = finite_difference_param(model.wv, idx_wv, loss_fn);
+
+        const float tol = 8e-2f;
+        assert(std::fabs(g_wq - n_wq) < tol);
+        assert(std::fabs(g_wk - n_wk) < tol);
+        assert(std::fabs(g_wv - n_wv) < tol);
+    });
+
+    runner.run("Checkpoint save and load round-trip", [] {
+        std::string corpus = "hello world hello world";
+        CharTokenizer tok(corpus);
+        TinyTransformer m1(tok.vocab_size(), 8, 16, 16, 2026);
+        TinyTransformer m2(tok.vocab_size(), 8, 16, 16, 7);
+
+        std::vector<int> ids = tok.encode("hello ");
+        std::vector<int> train_ids = tok.encode(corpus);
+        (void)m1.train_next_token(train_ids, 2, 8, 0.03f, 0);
+
+        const std::string ckpt_path = "toy_llm_test_checkpoint.bin";
+        bool saved = m1.save_checkpoint(ckpt_path);
+        assert(saved);
+
+        bool loaded = m2.load_checkpoint(ckpt_path);
+        assert(loaded);
+
+        std::vector<float> l1 = m1.forward(ids);
+        std::vector<float> l2 = m2.forward(ids);
+        assert(l1.size() == l2.size());
+        for (size_t i = 0; i < l1.size(); ++i) {
+            assert(std::fabs(l1[i] - l2[i]) < 1e-7f);
+        }
+
+        std::remove(ckpt_path.c_str());
+    });
+
+    runner.run("Checkpoint includes model mode metadata", [] {
+        std::string corpus = "hello world hello world";
+        CharTokenizer tok(corpus);
+        TinyTransformer m1(tok.vocab_size(), 8, 16, 16, 2027, 2, true, 2);
+        TinyTransformer wrong(tok.vocab_size(), 8, 16, 16, 7, 1, false, 1);
+        TinyTransformer right(tok.vocab_size(), 8, 16, 16, 7, 2, true, 2);
+
+        const std::string ckpt_path = "toy_llm_test_checkpoint_mode.bin";
+        assert(m1.save_checkpoint(ckpt_path));
+        assert(!wrong.load_checkpoint(ckpt_path));
+        assert(right.load_checkpoint(ckpt_path));
+        std::remove(ckpt_path.c_str());
+    });
+
     runner.run("Next-token training reduces loss", [] {
         std::string corpus = "abababababababababababab";
         CharTokenizer tok(corpus);
@@ -312,6 +451,68 @@ int main() {
         float after = model.train_next_token(ids, 25, 8, 0.05f, 0);
 
         assert(after < before);
+    });
+
+    runner.run("Next-token training supports AdamW with scheduler", [] {
+        std::string corpus = "abababababababababababab";
+        CharTokenizer tok(corpus);
+        TinyTransformer model(tok.vocab_size(), 8, 16, 16, 124);
+
+        std::vector<int> ids = tok.encode(corpus);
+        float before = model.evaluate_next_token_loss(ids, 8);
+        float after = model.train_next_token(ids, 20, 8, 0.03f, 0, "adamw", 10, 0.2f, 1e-4f);
+
+        assert(after < before);
+    });
+
+    runner.run("Next-token training supports minibatch with grad clipping", [] {
+        std::string corpus = "abcabcabcabcabcabcabcabcabcabc";
+        CharTokenizer tok(corpus);
+        TinyTransformer model(tok.vocab_size(), 8, 16, 16, 125, 1, false, 2);
+
+        std::vector<int> ids = tok.encode(corpus);
+        float before = model.evaluate_next_token_loss(ids, 10);
+        float after = model.train_next_token(ids, 20, 10, 0.03f, 0, "adamw", 8, 0.2f, 1e-4f, 4, 1.0f);
+
+        assert(after < before);
+    });
+
+    runner.run("AdamW converges at least as well as SGD on same seed", [] {
+        std::string corpus = "abcabcabcabcabcabcabcabcabcabc";
+        CharTokenizer tok(corpus);
+        TinyTransformer sgd_model(tok.vocab_size(), 8, 16, 16, 127, 1, false, 2);
+        TinyTransformer adam_model(tok.vocab_size(), 8, 16, 16, 127, 1, false, 2);
+
+        std::vector<int> ids = tok.encode(corpus);
+        float sgd_after = sgd_model.train_next_token(ids, 18, 10, 0.03f, 0, "sgd", 0, 0.1f, 1e-4f, 4, 1.0f);
+        float adam_after = adam_model.train_next_token(ids, 18, 10, 0.03f, 0, "adamw", 8, 0.2f, 1e-4f, 4, 1.0f);
+
+        assert(adam_after <= sgd_after + 0.08f);
+    });
+
+    runner.run("Training diagnostics flags execute without error", [] {
+        std::string corpus = "abababababababab";
+        CharTokenizer tok(corpus);
+        TinyTransformer model(tok.vocab_size(), 8, 16, 16, 128);
+
+        std::vector<int> ids = tok.encode(corpus);
+        float after = model.train_next_token(ids, 4, 8, 0.03f, 1, "adamw", 2, 0.2f, 1e-4f, 2, 0.5f, true, true);
+        assert(after > 0.0f);
+    });
+
+    runner.run("Next-token training rejects invalid batch size", [] {
+        std::string corpus = "abababababab";
+        CharTokenizer tok(corpus);
+        TinyTransformer model(tok.vocab_size(), 8, 16, 16, 126);
+
+        std::vector<int> ids = tok.encode(corpus);
+        bool threw = false;
+        try {
+            (void)model.train_next_token(ids, 2, 8, 0.03f, 0, "sgd", 0, 0.1f, 0.0f, 0, 0.0f);
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+        assert(threw);
     });
 
     runner.run("Generation is deterministic with fixed seed", [] {
@@ -329,6 +530,20 @@ int main() {
         std::vector<int> g1 = model.generate(prompt, 20, 8, 0.0f, 1, 1);
         std::vector<int> g2 = model.generate(prompt, 20, 8, 1.0f, 1, 999);
         assert(g1 == g2);
+    });
+
+    runner.run("Training with LayerNorm reduces loss", [] {
+        std::string corpus = "abababababababababababab";
+        CharTokenizer tok(corpus);
+        TinyTransformer model(tok.vocab_size(), 8, 16, 16, 1234, 1, true);
+
+        std::vector<int> ids = tok.encode(corpus);
+        float before = model.evaluate_next_token_loss(ids, 8);
+        (void)model.train_next_token(ids, 30, 8, 0.04f, 0);
+        float after = model.evaluate_next_token_loss(ids, 8);
+
+        assert(after < before);
+        assert(std::fabs(after - before) > 0.1f);
     });
 
     std::cout << "Toy LLM tests: passed=" << runner.passed << " failed=" << runner.failed << "\n";
