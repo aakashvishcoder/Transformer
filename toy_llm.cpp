@@ -1,16 +1,29 @@
 #include <algorithm>
+#include <cctype>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
-struct CharTokenizer {
+struct Tokenizer {
+    virtual ~Tokenizer() = default;
+    virtual std::vector<int> encode(const std::string& text) const = 0;
+    virtual std::string decode(const std::vector<int>& ids) const = 0;
+    virtual int vocab_size() const = 0;
+};
+
+struct CharTokenizer : Tokenizer {
     std::vector<char> id_to_char;
     std::unordered_map<char, int> char_to_id;
 
@@ -27,7 +40,7 @@ struct CharTokenizer {
         }
     }
 
-    std::vector<int> encode(const std::string& text) const {
+    std::vector<int> encode(const std::string& text) const override {
         std::vector<int> ids;
         ids.reserve(text.size());
         for (char c : text) {
@@ -41,7 +54,7 @@ struct CharTokenizer {
         return ids;
     }
 
-    std::string decode(const std::vector<int>& ids) const {
+    std::string decode(const std::vector<int>& ids) const override {
         std::string out;
         out.reserve(ids.size());
         for (int id : ids) {
@@ -54,10 +67,694 @@ struct CharTokenizer {
         return out;
     }
 
-    int vocab_size() const {
+    int vocab_size() const override {
         return static_cast<int>(id_to_char.size());
     }
 };
+
+struct SubwordTokenizer : Tokenizer {
+    std::vector<std::string> id_to_token;
+    std::unordered_map<std::string, int> token_to_id;
+    std::vector<int> ids_by_descending_token_length;
+    int unk_id = 0;
+
+    explicit SubwordTokenizer(const std::vector<std::string>& vocab_tokens) {
+        if (vocab_tokens.empty()) {
+            throw std::runtime_error("Subword vocab must not be empty");
+        }
+
+        id_to_token = vocab_tokens;
+        for (size_t i = 0; i < id_to_token.size(); ++i) {
+            token_to_id[id_to_token[i]] = static_cast<int>(i);
+        }
+
+        auto it = token_to_id.find("<unk>");
+        if (it != token_to_id.end()) {
+            unk_id = it->second;
+        } else {
+            unk_id = 0;
+        }
+
+        ids_by_descending_token_length.resize(id_to_token.size());
+        for (size_t i = 0; i < id_to_token.size(); ++i) {
+            ids_by_descending_token_length[i] = static_cast<int>(i);
+        }
+        std::sort(ids_by_descending_token_length.begin(), ids_by_descending_token_length.end(),
+                  [&](int a, int b) {
+                      return id_to_token[static_cast<size_t>(a)].size() >
+                             id_to_token[static_cast<size_t>(b)].size();
+                  });
+    }
+
+    static std::string parse_vocab_token_line(const std::string& line) {
+        std::string out;
+        out.reserve(line.size());
+        for (size_t i = 0; i < line.size(); ++i) {
+            char c = line[i];
+            if (c == '\\' && i + 1 < line.size()) {
+                char n = line[i + 1];
+                if (n == 'n') {
+                    out.push_back('\n');
+                    ++i;
+                    continue;
+                }
+                if (n == 't') {
+                    out.push_back('\t');
+                    ++i;
+                    continue;
+                }
+                if (n == 'r') {
+                    out.push_back('\r');
+                    ++i;
+                    continue;
+                }
+                if (n == 's') {
+                    out.push_back(' ');
+                    ++i;
+                    continue;
+                }
+            }
+            out.push_back(c);
+        }
+        return out;
+    }
+
+    static std::vector<std::string> load_vocab_file(const std::string& path) {
+        std::ifstream in(path);
+        if (!in.is_open()) {
+            throw std::runtime_error("Failed to open vocab file: " + path);
+        }
+
+        std::vector<std::string> tokens;
+        std::string line;
+        while (std::getline(in, line)) {
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            if (line.empty()) continue;
+            tokens.push_back(parse_vocab_token_line(line));
+        }
+
+        if (tokens.empty()) {
+            throw std::runtime_error("Vocab file has no usable tokens: " + path);
+        }
+        return tokens;
+    }
+
+    std::vector<int> encode(const std::string& text) const override {
+        std::vector<int> ids;
+        size_t pos = 0;
+        while (pos < text.size()) {
+            int best_id = -1;
+            size_t best_len = 0;
+
+            for (int id : ids_by_descending_token_length) {
+                const std::string& tok = id_to_token[static_cast<size_t>(id)];
+                if (tok.empty()) continue;
+                if (tok.size() <= best_len) break;
+                if (pos + tok.size() > text.size()) continue;
+                if (text.compare(pos, tok.size(), tok) == 0) {
+                    best_id = id;
+                    best_len = tok.size();
+                }
+            }
+
+            if (best_id >= 0) {
+                ids.push_back(best_id);
+                pos += best_len;
+            } else {
+                ids.push_back(unk_id);
+                ++pos;
+            }
+        }
+        if (ids.empty()) ids.push_back(unk_id);
+        return ids;
+    }
+
+    std::string decode(const std::vector<int>& ids) const override {
+        std::string out;
+        for (int id : ids) {
+            if (id < 0 || id >= static_cast<int>(id_to_token.size())) {
+                out += "<unk>";
+            } else {
+                out += id_to_token[static_cast<size_t>(id)];
+            }
+        }
+        return out;
+    }
+
+    int vocab_size() const override {
+        return static_cast<int>(id_to_token.size());
+    }
+};
+
+[[maybe_unused]] static std::string load_text_file(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open()) {
+        throw std::runtime_error("Failed to open dataset file: " + path);
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+[[maybe_unused]] static std::string load_dataset_from_files(const std::vector<std::string>& file_paths) {
+    if (file_paths.empty()) {
+        throw std::runtime_error("No dataset files provided");
+    }
+
+    std::string corpus;
+    for (size_t i = 0; i < file_paths.size(); ++i) {
+        std::string part = load_text_file(file_paths[i]);
+        if (!part.empty()) {
+            corpus += part;
+            if (i + 1 < file_paths.size()) {
+                corpus.push_back('\n');
+            }
+        }
+    }
+    if (corpus.empty()) {
+        throw std::runtime_error("Loaded dataset is empty");
+    }
+    return corpus;
+}
+
+static std::pair<std::vector<int>, std::vector<int>> split_train_val_ids(const std::vector<int>& ids,
+                                                                          float val_split) {
+    if (val_split <= 0.0f || ids.size() < 4) {
+        return {ids, {}};
+    }
+    float clamped = std::max(0.0f, std::min(0.9f, val_split));
+    size_t val_n = static_cast<size_t>(static_cast<double>(ids.size()) * static_cast<double>(clamped));
+    if (val_n < 2) {
+        return {ids, {}};
+    }
+    if (val_n >= ids.size() - 1) {
+        val_n = ids.size() - 2;
+    }
+
+    size_t split_idx = ids.size() - val_n;
+    std::vector<int> train(ids.begin(), ids.begin() + static_cast<std::ptrdiff_t>(split_idx));
+    std::vector<int> val(ids.begin() + static_cast<std::ptrdiff_t>(split_idx), ids.end());
+    return {train, val};
+}
+
+static std::string escape_vocab_token_line(const std::string& token) {
+    std::string out;
+    out.reserve(token.size() * 2);
+    for (char c : token) {
+        if (c == '\n') {
+            out += "\\n";
+        } else if (c == '\t') {
+            out += "\\t";
+        } else if (c == '\r') {
+            out += "\\r";
+        } else if (c == ' ') {
+            out += "\\s";
+        } else {
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
+static std::vector<std::string> build_vocab_from_corpus_frequency(const std::string& corpus,
+                                                                   int target_vocab_size) {
+    if (corpus.empty()) {
+        throw std::runtime_error("Cannot build vocab from empty corpus");
+    }
+    int vocab_cap = std::max(8, target_vocab_size);
+
+    std::unordered_map<std::string, int> word_freq;
+    std::unordered_map<std::string, int> char_freq;
+
+    std::string current_word;
+    current_word.reserve(32);
+
+    auto flush_word = [&]() {
+        if (!current_word.empty()) {
+            ++word_freq[current_word];
+            current_word.clear();
+        }
+    };
+
+    for (char c : corpus) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        if (std::isalnum(uc) || c == '\'') {
+            current_word.push_back(c);
+        } else {
+            flush_word();
+            ++char_freq[std::string(1, c)];
+        }
+    }
+    flush_word();
+
+    for (char c : corpus) {
+        ++char_freq[std::string(1, c)];
+    }
+
+    std::vector<std::pair<std::string, int>> words(word_freq.begin(), word_freq.end());
+    std::sort(words.begin(), words.end(), [](const auto& a, const auto& b) {
+        if (a.second != b.second) return a.second > b.second;
+        return a.first < b.first;
+    });
+
+    std::vector<std::pair<std::string, int>> chars(char_freq.begin(), char_freq.end());
+    std::sort(chars.begin(), chars.end(), [](const auto& a, const auto& b) {
+        if (a.second != b.second) return a.second > b.second;
+        return a.first < b.first;
+    });
+
+    std::vector<std::string> vocab;
+    vocab.reserve(static_cast<size_t>(vocab_cap));
+    std::unordered_set<std::string> seen;
+
+    auto push_token = [&](const std::string& tok) {
+        if (tok.empty()) return;
+        if (seen.insert(tok).second) {
+            vocab.push_back(tok);
+        }
+    };
+
+    push_token("<unk>");
+    push_token(" ");
+    push_token("\n");
+
+    int budget_for_words = std::max(0, vocab_cap - 4);
+    for (const auto& kv : words) {
+        if (static_cast<int>(vocab.size()) >= budget_for_words) break;
+        if (kv.first.size() <= 1) continue;
+        push_token(kv.first);
+    }
+
+    for (const auto& kv : chars) {
+        if (static_cast<int>(vocab.size()) >= vocab_cap) break;
+        push_token(kv.first);
+    }
+
+    if (vocab.size() < 4) {
+        throw std::runtime_error("Failed to build a usable vocab from corpus");
+    }
+
+    return vocab;
+}
+
+static void write_vocab_file(const std::string& path,
+                             const std::vector<std::string>& vocab_tokens) {
+    std::ofstream out(path);
+    if (!out.is_open()) {
+        throw std::runtime_error("Failed to write vocab file: " + path);
+    }
+    for (const std::string& tok : vocab_tokens) {
+        out << escape_vocab_token_line(tok) << "\n";
+    }
+}
+
+struct RunConfigJson {
+    std::unordered_map<std::string, std::string> scalars;
+    std::unordered_map<std::string, std::vector<std::string>> string_arrays;
+};
+
+struct EffectiveRunConfig {
+    int num_layers = 1;
+    std::vector<std::string> data;
+    std::vector<std::string> warnings;
+    std::string vocab;
+    std::string build_vocab;
+    std::string prompt;
+    int vocab_size = 256;
+    float val_split = 0.0f;
+    float temperature = 0.9f;
+    int top_k = 5;
+    float top_p = 1.0f;
+    float rep_penalty = 1.0f;
+    int steps = 80;
+    std::string resume;
+    std::string save_ckpt;
+    int epochs = 40;
+    int ctx_window = 24;
+    float lr = 0.04f;
+    std::string optimizer = "sgd";
+    int warmup = 0;
+    float min_lr_ratio = 0.1f;
+    float weight_decay = 0.0f;
+    int batch_size = 1;
+    float grad_clip = 0.0f;
+    int report_every = 10;
+    bool report_lr = false;
+    bool report_grad = false;
+    std::string save_config;
+    bool dry_run = false;
+    bool strict_config = false;
+};
+
+[[maybe_unused]] static bool cfg_is_true_like(const std::string& value) {
+    return value == "true" || value == "1";
+}
+
+static bool is_known_config_scalar_key(const std::string& key) {
+    static const std::unordered_set<std::string> keys = {
+        "num_layers", "vocab", "build_vocab", "prompt", "vocab_size",
+        "val_split", "temperature", "top_k", "top_p", "rep_penalty", "steps",
+        "resume", "save_ckpt", "save_config", "epochs", "ctx_window", "lr",
+        "optimizer", "warmup", "min_lr_ratio", "weight_decay", "batch_size",
+        "grad_clip", "report_every", "report_lr", "report_grad", "dry_run",
+        "strict_config"
+    };
+    return keys.find(key) != keys.end();
+}
+
+static bool is_known_config_array_key(const std::string& key) {
+    return key == "data" || key == "warnings";
+}
+
+static std::vector<std::string> all_known_config_keys() {
+    return {
+        "num_layers", "vocab", "build_vocab", "prompt", "vocab_size",
+        "val_split", "temperature", "top_k", "top_p", "rep_penalty", "steps",
+        "resume", "save_ckpt", "save_config", "epochs", "ctx_window", "lr",
+        "optimizer", "warmup", "min_lr_ratio", "weight_decay", "batch_size",
+        "grad_clip", "report_every", "report_lr", "report_grad", "dry_run",
+        "strict_config", "data"
+    };
+}
+
+static int levenshtein_distance(const std::string& a, const std::string& b) {
+    const size_t n = a.size();
+    const size_t m = b.size();
+    std::vector<int> prev(m + 1, 0);
+    std::vector<int> cur(m + 1, 0);
+    for (size_t j = 0; j <= m; ++j) prev[j] = static_cast<int>(j);
+
+    for (size_t i = 1; i <= n; ++i) {
+        cur[0] = static_cast<int>(i);
+        for (size_t j = 1; j <= m; ++j) {
+            int cost = (a[i - 1] == b[j - 1]) ? 0 : 1;
+            int del = prev[j] + 1;
+            int ins = cur[j - 1] + 1;
+            int sub = prev[j - 1] + cost;
+            cur[j] = std::min(del, std::min(ins, sub));
+        }
+        prev.swap(cur);
+    }
+    return prev[m];
+}
+
+static std::vector<std::string> suggest_config_keys(const std::string& bad_key,
+                                                    size_t max_count = 3) {
+    const std::vector<std::string> known = all_known_config_keys();
+    std::vector<std::pair<int, std::string>> ranked;
+    ranked.reserve(known.size());
+    for (const std::string& k : known) {
+        int d = levenshtein_distance(bad_key, k);
+        ranked.push_back({d, k});
+    }
+
+    if (ranked.empty()) return {};
+    std::sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b) {
+        if (a.first != b.first) return a.first < b.first;
+        return a.second < b.second;
+    });
+
+    int best_dist = ranked.front().first;
+
+    int max_reasonable = 3;
+    if (static_cast<int>(bad_key.size()) >= 10) {
+        max_reasonable = 4;
+    }
+    if (best_dist > max_reasonable) return {};
+
+    std::vector<std::string> out;
+    for (const auto& item : ranked) {
+        if (item.first > max_reasonable) break;
+        if (item.first > best_dist + 1) break;
+        out.push_back(item.second);
+        if (out.size() >= max_count) break;
+    }
+    return out;
+}
+
+static std::string format_config_key_suggestions(const std::vector<std::string>& suggestions) {
+    if (suggestions.empty()) return std::string();
+    if (suggestions.size() == 1) {
+        return ". Did you mean '" + suggestions[0] + "'?";
+    }
+
+    std::string out = ". Did you mean one of: ";
+    for (size_t i = 0; i < suggestions.size(); ++i) {
+        if (i > 0) out += ", ";
+        out += "'" + suggestions[i] + "'";
+    }
+    out += "?";
+    return out;
+}
+
+static std::vector<std::string> collect_non_strict_config_warnings(const RunConfigJson& cfg) {
+    std::vector<std::string> warnings;
+    for (const auto& kv : cfg.scalars) {
+        if (is_known_config_scalar_key(kv.first)) continue;
+        std::string msg = "Unknown config key (ignored): " + kv.first;
+        msg += format_config_key_suggestions(suggest_config_keys(kv.first));
+        warnings.push_back(msg);
+    }
+    for (const auto& kv : cfg.string_arrays) {
+        if (is_known_config_array_key(kv.first)) continue;
+        std::string msg = "Unknown config key (ignored): " + kv.first;
+        msg += format_config_key_suggestions(suggest_config_keys(kv.first));
+        warnings.push_back(msg);
+    }
+    return warnings;
+}
+
+static void validate_run_config_keys(const RunConfigJson& cfg, bool strict_mode) {
+    if (!strict_mode) return;
+
+    for (const auto& kv : cfg.scalars) {
+        if (!is_known_config_scalar_key(kv.first)) {
+            std::string msg = "Unknown config key in strict mode: " + kv.first;
+            msg += format_config_key_suggestions(suggest_config_keys(kv.first));
+            throw std::runtime_error(msg);
+        }
+    }
+    for (const auto& kv : cfg.string_arrays) {
+        if (!is_known_config_array_key(kv.first)) {
+            std::string msg = "Unknown config key in strict mode: " + kv.first;
+            msg += format_config_key_suggestions(suggest_config_keys(kv.first));
+            throw std::runtime_error(msg);
+        }
+    }
+}
+
+static void cfg_skip_ws(const std::string& s, size_t& i) {
+    while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) {
+        ++i;
+    }
+}
+
+static std::string cfg_parse_json_string(const std::string& s, size_t& i) {
+    if (i >= s.size() || s[i] != '"') {
+        throw std::runtime_error("Config JSON parse error: expected string");
+    }
+    ++i;
+    std::string out;
+    while (i < s.size()) {
+        char c = s[i++];
+        if (c == '"') {
+            return out;
+        }
+        if (c == '\\') {
+            if (i >= s.size()) {
+                throw std::runtime_error("Config JSON parse error: bad escape");
+            }
+            char e = s[i++];
+            if (e == 'n') out.push_back('\n');
+            else if (e == 't') out.push_back('\t');
+            else if (e == 'r') out.push_back('\r');
+            else if (e == '"') out.push_back('"');
+            else if (e == '\\') out.push_back('\\');
+            else out.push_back(e);
+            continue;
+        }
+        out.push_back(c);
+    }
+    throw std::runtime_error("Config JSON parse error: unterminated string");
+}
+
+static std::string cfg_parse_json_literal(const std::string& s, size_t& i) {
+    size_t start = i;
+    while (i < s.size()) {
+        char c = s[i];
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '+' || c == '.' || c == '_') {
+            ++i;
+        } else {
+            break;
+        }
+    }
+    if (i == start) {
+        throw std::runtime_error("Config JSON parse error: expected literal");
+    }
+    return s.substr(start, i - start);
+}
+
+static std::vector<std::string> cfg_parse_string_array(const std::string& s, size_t& i) {
+    if (i >= s.size() || s[i] != '[') {
+        throw std::runtime_error("Config JSON parse error: expected array");
+    }
+    ++i;
+    std::vector<std::string> out;
+    cfg_skip_ws(s, i);
+    if (i < s.size() && s[i] == ']') {
+        ++i;
+        return out;
+    }
+    while (i < s.size()) {
+        cfg_skip_ws(s, i);
+        out.push_back(cfg_parse_json_string(s, i));
+        cfg_skip_ws(s, i);
+        if (i >= s.size()) break;
+        if (s[i] == ',') {
+            ++i;
+            continue;
+        }
+        if (s[i] == ']') {
+            ++i;
+            return out;
+        }
+        throw std::runtime_error("Config JSON parse error: bad array separator");
+    }
+    throw std::runtime_error("Config JSON parse error: unterminated array");
+}
+
+static RunConfigJson load_run_config_json(const std::string& path) {
+    std::string raw = load_text_file(path);
+    size_t i = 0;
+    cfg_skip_ws(raw, i);
+    if (i >= raw.size() || raw[i] != '{') {
+        throw std::runtime_error("Config JSON parse error: root must be object");
+    }
+    ++i;
+
+    RunConfigJson cfg;
+    while (i < raw.size()) {
+        cfg_skip_ws(raw, i);
+        if (i < raw.size() && raw[i] == '}') {
+            ++i;
+            break;
+        }
+
+        std::string key = cfg_parse_json_string(raw, i);
+        cfg_skip_ws(raw, i);
+        if (i >= raw.size() || raw[i] != ':') {
+            throw std::runtime_error("Config JSON parse error: expected ':'");
+        }
+        ++i;
+        cfg_skip_ws(raw, i);
+
+        if (i >= raw.size()) {
+            throw std::runtime_error("Config JSON parse error: missing value");
+        }
+
+        if (raw[i] == '"') {
+            cfg.scalars[key] = cfg_parse_json_string(raw, i);
+        } else if (raw[i] == '[') {
+            cfg.string_arrays[key] = cfg_parse_string_array(raw, i);
+        } else {
+            cfg.scalars[key] = cfg_parse_json_literal(raw, i);
+        }
+
+        cfg_skip_ws(raw, i);
+        if (i < raw.size() && raw[i] == ',') {
+            ++i;
+            continue;
+        }
+        if (i < raw.size() && raw[i] == '}') {
+            ++i;
+            break;
+        }
+    }
+
+    cfg_skip_ws(raw, i);
+    if (i != raw.size()) {
+        throw std::runtime_error("Config JSON parse error: trailing content");
+    }
+    return cfg;
+}
+
+static std::string json_escape_string(const std::string& in) {
+    std::string out;
+    out.reserve(in.size() + in.size() / 4 + 8);
+    for (char c : in) {
+        if (c == '"') out += "\\\"";
+        else if (c == '\\') out += "\\\\";
+        else if (c == '\n') out += "\\n";
+        else if (c == '\t') out += "\\t";
+        else if (c == '\r') out += "\\r";
+        else out.push_back(c);
+    }
+    return out;
+}
+
+static std::string float_to_json(float v) {
+    std::ostringstream oss;
+    oss << v;
+    return oss.str();
+}
+
+static std::string effective_run_config_to_json_string(const EffectiveRunConfig& cfg) {
+    std::ostringstream out;
+    out << "{\n";
+    out << "  \"num_layers\": " << cfg.num_layers << ",\n";
+    out << "  \"data\": [";
+    for (size_t i = 0; i < cfg.data.size(); ++i) {
+        if (i > 0) out << ", ";
+        out << "\"" << json_escape_string(cfg.data[i]) << "\"";
+    }
+    out << "],\n";
+    out << "  \"warnings\": [";
+    for (size_t i = 0; i < cfg.warnings.size(); ++i) {
+        if (i > 0) out << ", ";
+        out << "\"" << json_escape_string(cfg.warnings[i]) << "\"";
+    }
+    out << "],\n";
+    out << "  \"vocab\": \"" << json_escape_string(cfg.vocab) << "\",\n";
+    out << "  \"build_vocab\": \"" << json_escape_string(cfg.build_vocab) << "\",\n";
+    out << "  \"prompt\": \"" << json_escape_string(cfg.prompt) << "\",\n";
+    out << "  \"vocab_size\": " << cfg.vocab_size << ",\n";
+    out << "  \"val_split\": " << float_to_json(cfg.val_split) << ",\n";
+    out << "  \"temperature\": " << float_to_json(cfg.temperature) << ",\n";
+    out << "  \"top_k\": " << cfg.top_k << ",\n";
+    out << "  \"top_p\": " << float_to_json(cfg.top_p) << ",\n";
+    out << "  \"rep_penalty\": " << float_to_json(cfg.rep_penalty) << ",\n";
+    out << "  \"steps\": " << cfg.steps << ",\n";
+    out << "  \"resume\": \"" << json_escape_string(cfg.resume) << "\",\n";
+    out << "  \"save_ckpt\": \"" << json_escape_string(cfg.save_ckpt) << "\",\n";
+    out << "  \"epochs\": " << cfg.epochs << ",\n";
+    out << "  \"ctx_window\": " << cfg.ctx_window << ",\n";
+    out << "  \"lr\": " << float_to_json(cfg.lr) << ",\n";
+    out << "  \"optimizer\": \"" << json_escape_string(cfg.optimizer) << "\",\n";
+    out << "  \"warmup\": " << cfg.warmup << ",\n";
+    out << "  \"min_lr_ratio\": " << float_to_json(cfg.min_lr_ratio) << ",\n";
+    out << "  \"weight_decay\": " << float_to_json(cfg.weight_decay) << ",\n";
+    out << "  \"batch_size\": " << cfg.batch_size << ",\n";
+    out << "  \"grad_clip\": " << float_to_json(cfg.grad_clip) << ",\n";
+    out << "  \"report_every\": " << cfg.report_every << ",\n";
+    out << "  \"report_lr\": " << (cfg.report_lr ? "true" : "false") << ",\n";
+    out << "  \"report_grad\": " << (cfg.report_grad ? "true" : "false") << ",\n";
+    out << "  \"save_config\": \"" << json_escape_string(cfg.save_config) << "\",\n";
+    out << "  \"dry_run\": " << (cfg.dry_run ? "true" : "false") << ",\n";
+    out << "  \"strict_config\": " << (cfg.strict_config ? "true" : "false") << "\n";
+    out << "}\n";
+    return out.str();
+}
+
+static void write_effective_run_config_json(const std::string& path,
+                                            const EffectiveRunConfig& cfg) {
+    std::ofstream out(path);
+    if (!out.is_open()) {
+        throw std::runtime_error("Failed to open output config file: " + path);
+    }
+    out << effective_run_config_to_json_string(cfg);
+}
 
 struct TinyTransformer {
     int vocab;
@@ -85,6 +782,29 @@ struct TinyTransformer {
     // Output projection.
     std::vector<float> out_proj; // [d_model, vocab]
     std::vector<float> out_bias; // [vocab]
+
+    // Persistent optimizer/training state for resume support.
+    int32_t train_global_step = 0;
+    std::vector<float> adam_m_out_bias;
+    std::vector<float> adam_v_out_bias;
+    std::vector<float> adam_m_out_proj;
+    std::vector<float> adam_v_out_proj;
+    std::vector<float> adam_m_w1;
+    std::vector<float> adam_v_w1;
+    std::vector<float> adam_m_w2;
+    std::vector<float> adam_v_w2;
+    std::vector<float> adam_m_wo;
+    std::vector<float> adam_v_wo;
+    std::vector<float> adam_m_wq;
+    std::vector<float> adam_v_wq;
+    std::vector<float> adam_m_wk;
+    std::vector<float> adam_v_wk;
+    std::vector<float> adam_m_wv;
+    std::vector<float> adam_v_wv;
+    std::vector<float> adam_m_tok;
+    std::vector<float> adam_v_tok;
+    std::vector<float> adam_m_pos;
+    std::vector<float> adam_v_pos;
 
     struct LayerCache {
         int seq = 0;                        // sequence length
@@ -195,6 +915,30 @@ struct TinyTransformer {
         init(out_proj);
     }
 
+    void clear_optimizer_state() {
+        train_global_step = 0;
+        adam_m_out_bias.clear();
+        adam_v_out_bias.clear();
+        adam_m_out_proj.clear();
+        adam_v_out_proj.clear();
+        adam_m_w1.clear();
+        adam_v_w1.clear();
+        adam_m_w2.clear();
+        adam_v_w2.clear();
+        adam_m_wo.clear();
+        adam_v_wo.clear();
+        adam_m_wq.clear();
+        adam_v_wq.clear();
+        adam_m_wk.clear();
+        adam_v_wk.clear();
+        adam_m_wv.clear();
+        adam_v_wv.clear();
+        adam_m_tok.clear();
+        adam_v_tok.clear();
+        adam_m_pos.clear();
+        adam_v_pos.clear();
+    }
+
     static void layernorm_rows(const std::vector<float>& in,
                                int rows,
                                int cols,
@@ -299,7 +1043,7 @@ struct TinyTransformer {
         std::ofstream out(path, std::ios::binary);
         if (!out.is_open()) return false;
 
-        const char magic[8] = {'T', 'L', 'L', 'M', 'C', 'K', '1', '\0'};
+        const char magic[8] = {'T', 'L', 'L', 'M', 'C', 'K', '2', '\0'};
         out.write(magic, 8);
         if (!out.good()) return false;
 
@@ -317,16 +1061,50 @@ struct TinyTransformer {
             return false;
         }
 
-        return write_vector(out, token_emb) &&
-               write_vector(out, pos_emb) &&
-               write_vector(out, wq) &&
-               write_vector(out, wk) &&
-               write_vector(out, wv) &&
-               write_vector(out, wo) &&
-               write_vector(out, w1) &&
-               write_vector(out, w2) &&
-               write_vector(out, out_proj) &&
-               write_vector(out, out_bias);
+         if (!(write_vector(out, token_emb) &&
+            write_vector(out, pos_emb) &&
+            write_vector(out, wq) &&
+            write_vector(out, wk) &&
+            write_vector(out, wv) &&
+            write_vector(out, wo) &&
+            write_vector(out, w1) &&
+            write_vector(out, w2) &&
+            write_vector(out, out_proj) &&
+            write_vector(out, out_bias))) {
+             return false;
+         }
+
+        bool has_optimizer_state =
+            adam_m_out_bias.size() == out_bias.size() && adam_v_out_bias.size() == out_bias.size() &&
+            adam_m_out_proj.size() == out_proj.size() && adam_v_out_proj.size() == out_proj.size() &&
+            adam_m_w1.size() == w1.size() && adam_v_w1.size() == w1.size() &&
+            adam_m_w2.size() == w2.size() && adam_v_w2.size() == w2.size() &&
+            adam_m_wo.size() == wo.size() && adam_v_wo.size() == wo.size() &&
+            adam_m_wq.size() == wq.size() && adam_v_wq.size() == wq.size() &&
+            adam_m_wk.size() == wk.size() && adam_v_wk.size() == wk.size() &&
+            adam_m_wv.size() == wv.size() && adam_v_wv.size() == wv.size() &&
+            adam_m_tok.size() == token_emb.size() && adam_v_tok.size() == token_emb.size() &&
+            adam_m_pos.size() == pos_emb.size() && adam_v_pos.size() == pos_emb.size();
+        int32_t has_optimizer_state_i32 = has_optimizer_state ? 1 : 0;
+
+        if (!write_pod(out, train_global_step) || !write_pod(out, has_optimizer_state_i32)) {
+            return false;
+        }
+
+        if (!has_optimizer_state) {
+            return true;
+        }
+
+        return write_vector(out, adam_m_out_bias) && write_vector(out, adam_v_out_bias) &&
+               write_vector(out, adam_m_out_proj) && write_vector(out, adam_v_out_proj) &&
+               write_vector(out, adam_m_w1) && write_vector(out, adam_v_w1) &&
+               write_vector(out, adam_m_w2) && write_vector(out, adam_v_w2) &&
+               write_vector(out, adam_m_wo) && write_vector(out, adam_v_wo) &&
+               write_vector(out, adam_m_wq) && write_vector(out, adam_v_wq) &&
+               write_vector(out, adam_m_wk) && write_vector(out, adam_v_wk) &&
+               write_vector(out, adam_m_wv) && write_vector(out, adam_v_wv) &&
+               write_vector(out, adam_m_tok) && write_vector(out, adam_v_tok) &&
+               write_vector(out, adam_m_pos) && write_vector(out, adam_v_pos);
     }
 
     bool load_checkpoint(const std::string& path) {
@@ -336,10 +1114,15 @@ struct TinyTransformer {
         char magic[8] = {0};
         in.read(magic, 8);
         if (!in.good()) return false;
-        const char expected[8] = {'T', 'L', 'L', 'M', 'C', 'K', '1', '\0'};
+        const char expected_v1[8] = {'T', 'L', 'L', 'M', 'C', 'K', '1', '\0'};
+        const char expected_v2[8] = {'T', 'L', 'L', 'M', 'C', 'K', '2', '\0'};
+        bool is_v1 = true;
+        bool is_v2 = true;
         for (int i = 0; i < 8; ++i) {
-            if (magic[i] != expected[i]) return false;
+            if (magic[i] != expected_v1[i]) is_v1 = false;
+            if (magic[i] != expected_v2[i]) is_v2 = false;
         }
+        if (!is_v1 && !is_v2) return false;
 
         int32_t v_vocab = 0;
         int32_t v_d_model = 0;
@@ -362,16 +1145,65 @@ struct TinyTransformer {
             return false;
         }
 
-        return read_vector(in, token_emb, token_emb.size()) &&
-               read_vector(in, pos_emb, pos_emb.size()) &&
-               read_vector(in, wq, wq.size()) &&
-               read_vector(in, wk, wk.size()) &&
-               read_vector(in, wv, wv.size()) &&
-               read_vector(in, wo, wo.size()) &&
-               read_vector(in, w1, w1.size()) &&
-               read_vector(in, w2, w2.size()) &&
-               read_vector(in, out_proj, out_proj.size()) &&
-               read_vector(in, out_bias, out_bias.size());
+                if (!(read_vector(in, token_emb, token_emb.size()) &&
+                            read_vector(in, pos_emb, pos_emb.size()) &&
+                            read_vector(in, wq, wq.size()) &&
+                            read_vector(in, wk, wk.size()) &&
+                            read_vector(in, wv, wv.size()) &&
+                            read_vector(in, wo, wo.size()) &&
+                            read_vector(in, w1, w1.size()) &&
+                            read_vector(in, w2, w2.size()) &&
+                            read_vector(in, out_proj, out_proj.size()) &&
+                            read_vector(in, out_bias, out_bias.size()))) {
+                        return false;
+                }
+
+                if (is_v1) {
+                        clear_optimizer_state();
+                        return true;
+                }
+
+                int32_t has_optimizer_state_i32 = 0;
+                if (!read_pod(in, train_global_step) || !read_pod(in, has_optimizer_state_i32)) return false;
+
+                if (has_optimizer_state_i32 == 0) {
+                    adam_m_out_bias.clear();
+                    adam_v_out_bias.clear();
+                    adam_m_out_proj.clear();
+                    adam_v_out_proj.clear();
+                    adam_m_w1.clear();
+                    adam_v_w1.clear();
+                    adam_m_w2.clear();
+                    adam_v_w2.clear();
+                    adam_m_wo.clear();
+                    adam_v_wo.clear();
+                    adam_m_wq.clear();
+                    adam_v_wq.clear();
+                    adam_m_wk.clear();
+                    adam_v_wk.clear();
+                    adam_m_wv.clear();
+                    adam_v_wv.clear();
+                    adam_m_tok.clear();
+                    adam_v_tok.clear();
+                    adam_m_pos.clear();
+                    adam_v_pos.clear();
+                    return true;
+                }
+
+                if (!(read_vector(in, adam_m_out_bias, out_bias.size()) && read_vector(in, adam_v_out_bias, out_bias.size()) &&
+                      read_vector(in, adam_m_out_proj, out_proj.size()) && read_vector(in, adam_v_out_proj, out_proj.size()) &&
+                      read_vector(in, adam_m_w1, w1.size()) && read_vector(in, adam_v_w1, w1.size()) &&
+                      read_vector(in, adam_m_w2, w2.size()) && read_vector(in, adam_v_w2, w2.size()) &&
+                      read_vector(in, adam_m_wo, wo.size()) && read_vector(in, adam_v_wo, wo.size()) &&
+                      read_vector(in, adam_m_wq, wq.size()) && read_vector(in, adam_v_wq, wq.size()) &&
+                      read_vector(in, adam_m_wk, wk.size()) && read_vector(in, adam_v_wk, wk.size()) &&
+                      read_vector(in, adam_m_wv, wv.size()) && read_vector(in, adam_v_wv, wv.size()) &&
+                      read_vector(in, adam_m_tok, token_emb.size()) && read_vector(in, adam_v_tok, token_emb.size()) &&
+                      read_vector(in, adam_m_pos, pos_emb.size()) && read_vector(in, adam_v_pos, pos_emb.size()))) {
+                    return false;
+                }
+
+                return true;
     }
 
     static float dot_row(const std::vector<float>& a, int a_row, int a_cols,
@@ -1187,37 +2019,68 @@ struct TinyTransformer {
                            int batch_size = 1,
                            float grad_clip_norm = 0.0f,
                            bool report_lr = false,
-                           bool report_grad_norm = false) {
+                           bool report_grad_norm = false,
+                           float val_split = 0.0f,
+                           bool report_val_perplexity = false,
+                           bool resume_optimizer_state = false) {
         if (batch_size <= 0) {
             throw std::runtime_error("batch_size must be >= 1");
         }
         if (corpus_ids.size() < 2) {
             throw std::runtime_error("Corpus must contain at least 2 tokens");
         }
+
+        std::vector<int> train_ids;
+        std::vector<int> val_ids;
+        {
+            auto split = split_train_val_ids(corpus_ids, val_split);
+            train_ids = std::move(split.first);
+            val_ids = std::move(split.second);
+        }
+        if (train_ids.size() < 2) {
+            throw std::runtime_error("Training split must contain at least 2 tokens");
+        }
+
         const int cw = std::max(2, std::min(context_window, max_seq));
 
         struct AdamState {
-            std::vector<float> m;
-            std::vector<float> v;
+            std::vector<float>* m = nullptr;
+            std::vector<float>* v = nullptr;
         };
 
-        AdamState st_out_bias, st_out_proj, st_w1, st_w2, st_wo, st_wq, st_wk, st_wv, st_tok, st_pos;
+        if (!resume_optimizer_state) {
+            clear_optimizer_state();
+        }
+
+        AdamState st_out_bias{&adam_m_out_bias, &adam_v_out_bias};
+        AdamState st_out_proj{&adam_m_out_proj, &adam_v_out_proj};
+        AdamState st_w1{&adam_m_w1, &adam_v_w1};
+        AdamState st_w2{&adam_m_w2, &adam_v_w2};
+        AdamState st_wo{&adam_m_wo, &adam_v_wo};
+        AdamState st_wq{&adam_m_wq, &adam_v_wq};
+        AdamState st_wk{&adam_m_wk, &adam_v_wk};
+        AdamState st_wv{&adam_m_wv, &adam_v_wv};
+        AdamState st_tok{&adam_m_tok, &adam_v_tok};
+        AdamState st_pos{&adam_m_pos, &adam_v_pos};
 
         auto ensure_state = [](AdamState& st, size_t n) {
-            if (st.m.size() != n) {
-                st.m.assign(n, 0.0f);
-                st.v.assign(n, 0.0f);
+            if (st.m == nullptr || st.v == nullptr) {
+                throw std::runtime_error("AdamState vectors must be initialized");
+            }
+            if (st.m->size() != n) {
+                st.m->assign(n, 0.0f);
+                st.v->assign(n, 0.0f);
             }
         };
 
         const float beta1 = 0.9f;
         const float beta2 = 0.999f;
         const float eps = 1e-8f;
-        int global_step = 0;
+        int global_step = train_global_step;
 
         int updates_per_epoch = 0;
-        for (size_t start = 0; start + 1 < corpus_ids.size(); ++start) {
-            size_t end = std::min(start + static_cast<size_t>(cw), corpus_ids.size() - 1);
+        for (size_t start = 0; start + 1 < train_ids.size(); ++start) {
+            size_t end = std::min(start + static_cast<size_t>(cw), train_ids.size() - 1);
             if (end > start) ++updates_per_epoch;
         }
         updates_per_epoch = std::max(1, updates_per_epoch);
@@ -1247,10 +2110,10 @@ struct TinyTransformer {
                 float b2_corr = 1.0f - std::pow(beta2, static_cast<float>(step));
                 for (size_t i = 0; i < param.size(); ++i) {
                     float g = grad[i] + weight_decay * param[i];
-                    st.m[i] = beta1 * st.m[i] + (1.0f - beta1) * g;
-                    st.v[i] = beta2 * st.v[i] + (1.0f - beta2) * g * g;
-                    float m_hat = st.m[i] / b1_corr;
-                    float v_hat = st.v[i] / b2_corr;
+                    (*st.m)[i] = beta1 * (*st.m)[i] + (1.0f - beta1) * g;
+                    (*st.v)[i] = beta2 * (*st.v)[i] + (1.0f - beta2) * g * g;
+                    float m_hat = (*st.m)[i] / b1_corr;
+                    float v_hat = (*st.v)[i] / b2_corr;
                     param[i] -= lr_eff * (m_hat / (std::sqrt(v_hat) + eps));
                 }
             } else {
@@ -1389,14 +2252,14 @@ struct TinyTransformer {
                 clear_accumulators();
             };
 
-            for (size_t start = 0; start + 1 < corpus_ids.size(); ++start) {
-                size_t end = std::min(start + static_cast<size_t>(cw), corpus_ids.size() - 1);
+            for (size_t start = 0; start + 1 < train_ids.size(); ++start) {
+                size_t end = std::min(start + static_cast<size_t>(cw), train_ids.size() - 1);
                 if (end <= start) continue;
 
-                std::vector<int> ctx(corpus_ids.begin() + static_cast<std::ptrdiff_t>(start),
-                                     corpus_ids.begin() + static_cast<std::ptrdiff_t>(end));
-                std::vector<int> tgt(corpus_ids.begin() + static_cast<std::ptrdiff_t>(start + 1),
-                                     corpus_ids.begin() + static_cast<std::ptrdiff_t>(end + 1));
+                std::vector<int> ctx(train_ids.begin() + static_cast<std::ptrdiff_t>(start),
+                                     train_ids.begin() + static_cast<std::ptrdiff_t>(end));
+                std::vector<int> tgt(train_ids.begin() + static_cast<std::ptrdiff_t>(start + 1),
+                                     train_ids.begin() + static_cast<std::ptrdiff_t>(end + 1));
 
                 ForwardCache cache = forward_cache(ctx);
                 OutputHeadBackward grads = backprop_output_head(cache, tgt);
@@ -1454,9 +2317,16 @@ struct TinyTransformer {
                 if (report_grad_norm && epoch_update_steps > 0) {
                     std::cout << " avg_grad_norm=" << (epoch_grad_norm_sum / static_cast<float>(epoch_update_steps));
                 }
+                if (report_val_perplexity && val_ids.size() >= 2) {
+                    float val_loss = evaluate_next_token_loss(val_ids, cw);
+                    float val_ppl = std::exp(val_loss);
+                    std::cout << " val_ppl=" << val_ppl;
+                }
                 std::cout << "\n";
             }
         }
+
+        train_global_step = global_step;
 
         return final_loss;
     }
@@ -1466,7 +2336,9 @@ struct TinyTransformer {
                               int context_window = 32,
                               float temperature = 1.0f,
                               int top_k = 0,
-                              uint32_t seed = 2026) const {
+                              uint32_t seed = 2026,
+                              float top_p = 1.0f,
+                              float repetition_penalty = 1.0f) const {
         if (prompt.empty()) {
             throw std::runtime_error("Prompt must not be empty");
         }
@@ -1488,6 +2360,24 @@ struct TinyTransformer {
                 }
             }
 
+            if (repetition_penalty > 1.0f) {
+                std::vector<char> seen(static_cast<size_t>(vocab), 0);
+                for (int id : ids) {
+                    if (id >= 0 && id < vocab) {
+                        seen[static_cast<size_t>(id)] = 1;
+                    }
+                }
+                for (int i = 0; i < vocab; ++i) {
+                    if (!seen[static_cast<size_t>(i)]) continue;
+                    float& logit = logits[static_cast<size_t>(i)];
+                    if (logit > 0.0f) {
+                        logit /= repetition_penalty;
+                    } else {
+                        logit *= repetition_penalty;
+                    }
+                }
+            }
+
             if (top_k > 0 && top_k < vocab) {
                 std::vector<int> idx(static_cast<size_t>(vocab), 0);
                 for (int i = 0; i < vocab; ++i) idx[static_cast<size_t>(i)] = i;
@@ -1496,6 +2386,31 @@ struct TinyTransformer {
                 });
                 std::vector<char> keep(static_cast<size_t>(vocab), 0);
                 for (int i = 0; i < top_k; ++i) keep[static_cast<size_t>(idx[static_cast<size_t>(i)])] = 1;
+                for (int i = 0; i < vocab; ++i) {
+                    if (!keep[static_cast<size_t>(i)]) {
+                        logits[static_cast<size_t>(i)] = -std::numeric_limits<float>::infinity();
+                    }
+                }
+            }
+
+            if (top_p > 0.0f && top_p < 1.0f) {
+                std::vector<float> probs_for_filter;
+                stable_softmax(logits, probs_for_filter);
+
+                std::vector<int> sorted_idx(static_cast<size_t>(vocab), 0);
+                for (int i = 0; i < vocab; ++i) sorted_idx[static_cast<size_t>(i)] = i;
+                std::sort(sorted_idx.begin(), sorted_idx.end(), [&](int a, int b) {
+                    return probs_for_filter[static_cast<size_t>(a)] > probs_for_filter[static_cast<size_t>(b)];
+                });
+
+                std::vector<char> keep(static_cast<size_t>(vocab), 0);
+                float cumulative = 0.0f;
+                for (int id : sorted_idx) {
+                    keep[static_cast<size_t>(id)] = 1;
+                    cumulative += probs_for_filter[static_cast<size_t>(id)];
+                    if (cumulative >= top_p) break;
+                }
+
                 for (int i = 0; i < vocab; ++i) {
                     if (!keep[static_cast<size_t>(i)]) {
                         logits[static_cast<size_t>(i)] = -std::numeric_limits<float>::infinity();
@@ -1527,31 +2442,579 @@ struct TinyTransformer {
 
 #ifndef TOY_LLM_NO_MAIN
 int main(int argc, char* argv[]) {
-    const std::string corpus =
+    const std::string default_corpus =
         "hello world. this is a tiny transformer demo for character generation. "
         "hello world. this is a tiny transformer demo for character generation. ";
 
-    CharTokenizer tok(corpus);
     int num_layers = 1;
-    if (argc > 1) {
-        num_layers = std::atoi(argv[1]);
-        if (num_layers < 1) num_layers = 1;
+    std::vector<std::string> data_files;
+    std::string vocab_path;
+    std::string build_vocab_out_path;
+    std::string prompt = "hello ";
+    int vocab_size_target = 256;
+    float val_split = 0.0f;
+    float temperature = 0.9f;
+    int top_k = 5;
+    float top_p = 1.0f;
+    float repetition_penalty = 1.0f;
+    int generation_steps = 80;
+    std::string load_checkpoint_path;
+    std::string save_checkpoint_path;
+    std::string save_config_path;
+    int train_epochs = 40;
+    int train_context_window = 24;
+    float train_lr = 0.04f;
+    int report_every = 10;
+    std::string optimizer = "sgd";
+    int warmup_steps = 0;
+    float min_lr_ratio = 0.1f;
+    float weight_decay = 0.0f;
+    int batch_size = 1;
+    float grad_clip_norm = 0.0f;
+    bool report_lr = false;
+    bool report_grad_norm = false;
+    bool dry_run = false;
+    bool strict_config = false;
+    std::vector<std::string> config_warnings;
+    std::unordered_set<std::string> warning_set;
+
+    auto apply_scalar = [&](const std::string& key, const std::string& value) {
+        if (key == "num_layers") {
+            num_layers = std::max(1, std::atoi(value.c_str()));
+        } else if (key == "vocab") {
+            vocab_path = value;
+        } else if (key == "build_vocab") {
+            build_vocab_out_path = value;
+        } else if (key == "prompt") {
+            prompt = value;
+        } else if (key == "vocab_size") {
+            vocab_size_target = std::max(8, std::atoi(value.c_str()));
+        } else if (key == "val_split") {
+            val_split = std::stof(value);
+        } else if (key == "temperature") {
+            temperature = std::stof(value);
+        } else if (key == "top_k") {
+            top_k = std::max(0, std::atoi(value.c_str()));
+        } else if (key == "top_p") {
+            top_p = std::stof(value);
+        } else if (key == "rep_penalty") {
+            repetition_penalty = std::stof(value);
+        } else if (key == "steps") {
+            generation_steps = std::max(1, std::atoi(value.c_str()));
+        } else if (key == "resume") {
+            load_checkpoint_path = value;
+        } else if (key == "save_ckpt") {
+            save_checkpoint_path = value;
+        } else if (key == "save_config") {
+            save_config_path = value;
+        } else if (key == "epochs") {
+            train_epochs = std::max(1, std::atoi(value.c_str()));
+        } else if (key == "ctx_window") {
+            train_context_window = std::max(2, std::atoi(value.c_str()));
+        } else if (key == "lr") {
+            train_lr = std::stof(value);
+        } else if (key == "optimizer") {
+            optimizer = value;
+        } else if (key == "warmup") {
+            warmup_steps = std::max(0, std::atoi(value.c_str()));
+        } else if (key == "min_lr_ratio") {
+            min_lr_ratio = std::stof(value);
+        } else if (key == "weight_decay") {
+            weight_decay = std::stof(value);
+        } else if (key == "batch_size") {
+            batch_size = std::max(1, std::atoi(value.c_str()));
+        } else if (key == "grad_clip") {
+            grad_clip_norm = std::stof(value);
+        } else if (key == "report_every") {
+            report_every = std::max(0, std::atoi(value.c_str()));
+        } else if (key == "report_lr") {
+            report_lr = cfg_is_true_like(value);
+        } else if (key == "report_grad") {
+            report_grad_norm = cfg_is_true_like(value);
+        } else if (key == "dry_run") {
+            dry_run = cfg_is_true_like(value);
+        } else if (key == "strict_config") {
+            strict_config = cfg_is_true_like(value);
+        }
+    };
+
+    // Pre-pass: detect strict mode from CLI so config loading can enforce key checks.
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--strict-config") {
+            strict_config = true;
+        }
     }
+
+    // First pass: load config file (if present) to set defaults.
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        std::string config_path;
+        if (arg == "--config") {
+            if (i + 1 >= argc) throw std::runtime_error("--config requires a file path");
+            config_path = argv[++i];
+        } else if (arg.rfind("--config=", 0) == 0) {
+            config_path = arg.substr(9);
+        }
+        if (!config_path.empty()) {
+            RunConfigJson cfg = load_run_config_json(config_path);
+            bool strict_for_this_cfg = strict_config;
+            auto it_strict = cfg.scalars.find("strict_config");
+            if (it_strict != cfg.scalars.end() && cfg_is_true_like(it_strict->second)) {
+                strict_for_this_cfg = true;
+            }
+            validate_run_config_keys(cfg, strict_for_this_cfg);
+            if (!strict_for_this_cfg) {
+                std::vector<std::string> ws = collect_non_strict_config_warnings(cfg);
+                for (const std::string& w : ws) {
+                    if (warning_set.insert(w).second) {
+                        config_warnings.push_back(w);
+                    }
+                }
+            }
+            for (const auto& kv : cfg.scalars) {
+                apply_scalar(kv.first, kv.second);
+            }
+            auto it_data = cfg.string_arrays.find("data");
+            if (it_data != cfg.string_arrays.end()) {
+                data_files = it_data->second;
+            }
+        }
+    }
+
+    // Second pass: parse CLI args and override config values.
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            std::cout << "Usage: toy_llm [num_layers] [--data FILE]... [--vocab VOCAB_FILE] [--prompt TEXT]\n";
+            std::cout << "  num_layers       Optional positional integer (default: 1)\n";
+            std::cout << "  --data FILE      Add a dataset text file (can be repeated)\n";
+            std::cout << "  --config FILE    Load run settings from JSON file\n";
+            std::cout << "  --vocab FILE     Enable subword mode with vocab from FILE\n";
+            std::cout << "  --build-vocab FILE   Build vocab from dataset and write to FILE\n";
+            std::cout << "  --vocab-size N       Target size for --build-vocab mode (default: 256)\n";
+            std::cout << "  --prompt TEXT    Prompt for generation\n";
+            std::cout << "  --val-split R    Validation split ratio in [0,0.9], e.g. 0.1\n";
+            std::cout << "  --temperature T  Sampling temperature (default: 0.9)\n";
+            std::cout << "  --top-k K        Top-k sampling cutoff (default: 5)\n";
+            std::cout << "  --top-p P        Top-p nucleus threshold (default: 1.0)\n";
+            std::cout << "  --rep-penalty R  Repetition penalty (>1 discourages repeats)\n";
+            std::cout << "  --steps N        Number of generation steps (default: 80)\n";
+            std::cout << "  --resume FILE    Load model + optimizer state from checkpoint\n";
+            std::cout << "  --save-ckpt FILE Save model + optimizer state after training\n";
+            std::cout << "  --save-config FILE Save fully resolved run config JSON\n";
+            std::cout << "  --epochs N       Training epochs (default: 40)\n";
+            std::cout << "  --ctx-window N   Training context window (default: 24)\n";
+            std::cout << "  --lr F           Base learning rate (default: 0.04)\n";
+            std::cout << "  --optimizer S    Optimizer: sgd or adamw (default: sgd)\n";
+            std::cout << "  --warmup N       LR warmup steps (default: 0)\n";
+            std::cout << "  --min-lr-ratio F Cosine floor ratio (default: 0.1)\n";
+            std::cout << "  --weight-decay F Weight decay (default: 0.0)\n";
+            std::cout << "  --batch-size N   Minibatch accumulation size (default: 1)\n";
+            std::cout << "  --grad-clip F    Global gradient clip norm (default: 0.0)\n";
+            std::cout << "  --report-every N Print every N epochs (default: 10)\n";
+            std::cout << "  --report-lr      Print average LR each report\n";
+            std::cout << "  --report-grad    Print average grad norm each report\n";
+            std::cout << "  --dry-run        Validate/resolve settings and print effective config only\n";
+            std::cout << "  --strict-config  Fail if config JSON contains unknown keys\n";
+            return 0;
+        }
+
+        if (arg == "--data") {
+            if (i + 1 >= argc) throw std::runtime_error("--data requires a file path");
+            data_files.push_back(argv[++i]);
+            continue;
+        }
+        if (arg.rfind("--data=", 0) == 0) {
+            data_files.push_back(arg.substr(7));
+            continue;
+        }
+        if (arg == "--config") {
+            if (i + 1 >= argc) throw std::runtime_error("--config requires a file path");
+            ++i;
+            continue;
+        }
+        if (arg.rfind("--config=", 0) == 0) {
+            continue;
+        }
+        if (arg == "--vocab") {
+            if (i + 1 >= argc) throw std::runtime_error("--vocab requires a file path");
+            vocab_path = argv[++i];
+            continue;
+        }
+        if (arg.rfind("--vocab=", 0) == 0) {
+            vocab_path = arg.substr(8);
+            continue;
+        }
+        if (arg == "--build-vocab") {
+            if (i + 1 >= argc) throw std::runtime_error("--build-vocab requires a file path");
+            build_vocab_out_path = argv[++i];
+            continue;
+        }
+        if (arg.rfind("--build-vocab=", 0) == 0) {
+            build_vocab_out_path = arg.substr(14);
+            continue;
+        }
+        if (arg == "--vocab-size") {
+            if (i + 1 >= argc) throw std::runtime_error("--vocab-size requires a value");
+            vocab_size_target = std::max(8, std::atoi(argv[++i]));
+            continue;
+        }
+        if (arg.rfind("--vocab-size=", 0) == 0) {
+            vocab_size_target = std::max(8, std::atoi(arg.substr(13).c_str()));
+            continue;
+        }
+        if (arg == "--prompt") {
+            if (i + 1 >= argc) throw std::runtime_error("--prompt requires text");
+            prompt = argv[++i];
+            continue;
+        }
+        if (arg.rfind("--prompt=", 0) == 0) {
+            prompt = arg.substr(9);
+            continue;
+        }
+        if (arg == "--val-split") {
+            if (i + 1 >= argc) throw std::runtime_error("--val-split requires a value");
+            val_split = std::stof(argv[++i]);
+            continue;
+        }
+        if (arg.rfind("--val-split=", 0) == 0) {
+            val_split = std::stof(arg.substr(12));
+            continue;
+        }
+        if (arg == "--temperature") {
+            if (i + 1 >= argc) throw std::runtime_error("--temperature requires a value");
+            temperature = std::stof(argv[++i]);
+            continue;
+        }
+        if (arg.rfind("--temperature=", 0) == 0) {
+            temperature = std::stof(arg.substr(14));
+            continue;
+        }
+        if (arg == "--top-k") {
+            if (i + 1 >= argc) throw std::runtime_error("--top-k requires a value");
+            top_k = std::max(0, std::atoi(argv[++i]));
+            continue;
+        }
+        if (arg.rfind("--top-k=", 0) == 0) {
+            top_k = std::max(0, std::atoi(arg.substr(8).c_str()));
+            continue;
+        }
+        if (arg == "--top-p") {
+            if (i + 1 >= argc) throw std::runtime_error("--top-p requires a value");
+            top_p = std::stof(argv[++i]);
+            continue;
+        }
+        if (arg.rfind("--top-p=", 0) == 0) {
+            top_p = std::stof(arg.substr(8));
+            continue;
+        }
+        if (arg == "--rep-penalty") {
+            if (i + 1 >= argc) throw std::runtime_error("--rep-penalty requires a value");
+            repetition_penalty = std::stof(argv[++i]);
+            continue;
+        }
+        if (arg.rfind("--rep-penalty=", 0) == 0) {
+            repetition_penalty = std::stof(arg.substr(14));
+            continue;
+        }
+        if (arg == "--steps") {
+            if (i + 1 >= argc) throw std::runtime_error("--steps requires a value");
+            generation_steps = std::max(1, std::atoi(argv[++i]));
+            continue;
+        }
+        if (arg.rfind("--steps=", 0) == 0) {
+            generation_steps = std::max(1, std::atoi(arg.substr(8).c_str()));
+            continue;
+        }
+        if (arg == "--resume") {
+            if (i + 1 >= argc) throw std::runtime_error("--resume requires a file path");
+            load_checkpoint_path = argv[++i];
+            continue;
+        }
+        if (arg.rfind("--resume=", 0) == 0) {
+            load_checkpoint_path = arg.substr(9);
+            continue;
+        }
+        if (arg == "--save-ckpt") {
+            if (i + 1 >= argc) throw std::runtime_error("--save-ckpt requires a file path");
+            save_checkpoint_path = argv[++i];
+            continue;
+        }
+        if (arg.rfind("--save-ckpt=", 0) == 0) {
+            save_checkpoint_path = arg.substr(12);
+            continue;
+        }
+        if (arg == "--save-config") {
+            if (i + 1 >= argc) throw std::runtime_error("--save-config requires a file path");
+            save_config_path = argv[++i];
+            continue;
+        }
+        if (arg.rfind("--save-config=", 0) == 0) {
+            save_config_path = arg.substr(14);
+            continue;
+        }
+        if (arg == "--epochs") {
+            if (i + 1 >= argc) throw std::runtime_error("--epochs requires a value");
+            train_epochs = std::max(1, std::atoi(argv[++i]));
+            continue;
+        }
+        if (arg.rfind("--epochs=", 0) == 0) {
+            train_epochs = std::max(1, std::atoi(arg.substr(9).c_str()));
+            continue;
+        }
+        if (arg == "--ctx-window") {
+            if (i + 1 >= argc) throw std::runtime_error("--ctx-window requires a value");
+            train_context_window = std::max(2, std::atoi(argv[++i]));
+            continue;
+        }
+        if (arg.rfind("--ctx-window=", 0) == 0) {
+            train_context_window = std::max(2, std::atoi(arg.substr(13).c_str()));
+            continue;
+        }
+        if (arg == "--lr") {
+            if (i + 1 >= argc) throw std::runtime_error("--lr requires a value");
+            train_lr = std::stof(argv[++i]);
+            continue;
+        }
+        if (arg.rfind("--lr=", 0) == 0) {
+            train_lr = std::stof(arg.substr(5));
+            continue;
+        }
+        if (arg == "--optimizer") {
+            if (i + 1 >= argc) throw std::runtime_error("--optimizer requires a value");
+            optimizer = argv[++i];
+            continue;
+        }
+        if (arg.rfind("--optimizer=", 0) == 0) {
+            optimizer = arg.substr(12);
+            continue;
+        }
+        if (arg == "--warmup") {
+            if (i + 1 >= argc) throw std::runtime_error("--warmup requires a value");
+            warmup_steps = std::max(0, std::atoi(argv[++i]));
+            continue;
+        }
+        if (arg.rfind("--warmup=", 0) == 0) {
+            warmup_steps = std::max(0, std::atoi(arg.substr(9).c_str()));
+            continue;
+        }
+        if (arg == "--min-lr-ratio") {
+            if (i + 1 >= argc) throw std::runtime_error("--min-lr-ratio requires a value");
+            min_lr_ratio = std::stof(argv[++i]);
+            continue;
+        }
+        if (arg.rfind("--min-lr-ratio=", 0) == 0) {
+            min_lr_ratio = std::stof(arg.substr(15));
+            continue;
+        }
+        if (arg == "--weight-decay") {
+            if (i + 1 >= argc) throw std::runtime_error("--weight-decay requires a value");
+            weight_decay = std::stof(argv[++i]);
+            continue;
+        }
+        if (arg.rfind("--weight-decay=", 0) == 0) {
+            weight_decay = std::stof(arg.substr(15));
+            continue;
+        }
+        if (arg == "--batch-size") {
+            if (i + 1 >= argc) throw std::runtime_error("--batch-size requires a value");
+            batch_size = std::max(1, std::atoi(argv[++i]));
+            continue;
+        }
+        if (arg.rfind("--batch-size=", 0) == 0) {
+            batch_size = std::max(1, std::atoi(arg.substr(13).c_str()));
+            continue;
+        }
+        if (arg == "--grad-clip") {
+            if (i + 1 >= argc) throw std::runtime_error("--grad-clip requires a value");
+            grad_clip_norm = std::stof(argv[++i]);
+            continue;
+        }
+        if (arg.rfind("--grad-clip=", 0) == 0) {
+            grad_clip_norm = std::stof(arg.substr(12));
+            continue;
+        }
+        if (arg == "--report-every") {
+            if (i + 1 >= argc) throw std::runtime_error("--report-every requires a value");
+            report_every = std::max(0, std::atoi(argv[++i]));
+            continue;
+        }
+        if (arg.rfind("--report-every=", 0) == 0) {
+            report_every = std::max(0, std::atoi(arg.substr(15).c_str()));
+            continue;
+        }
+        if (arg == "--report-lr") {
+            report_lr = true;
+            continue;
+        }
+        if (arg == "--report-grad") {
+            report_grad_norm = true;
+            continue;
+        }
+        if (arg == "--dry-run") {
+            dry_run = true;
+            continue;
+        }
+        if (arg == "--strict-config") {
+            strict_config = true;
+            continue;
+        }
+
+        bool is_integer = !arg.empty();
+        for (char ch : arg) {
+            if (!std::isdigit(static_cast<unsigned char>(ch)) && ch != '-') {
+                is_integer = false;
+                break;
+            }
+        }
+        if (is_integer) {
+            num_layers = std::max(1, std::atoi(arg.c_str()));
+            continue;
+        }
+
+        throw std::runtime_error("Unknown argument: " + arg);
+    }
+
+    auto build_effective_config = [&]() {
+        EffectiveRunConfig cfg;
+        cfg.num_layers = num_layers;
+        cfg.data = data_files;
+        cfg.warnings = config_warnings;
+        cfg.vocab = vocab_path;
+        cfg.build_vocab = build_vocab_out_path;
+        cfg.prompt = prompt;
+        cfg.vocab_size = vocab_size_target;
+        cfg.val_split = val_split;
+        cfg.temperature = temperature;
+        cfg.top_k = top_k;
+        cfg.top_p = top_p;
+        cfg.rep_penalty = repetition_penalty;
+        cfg.steps = generation_steps;
+        cfg.resume = load_checkpoint_path;
+        cfg.save_ckpt = save_checkpoint_path;
+        cfg.epochs = train_epochs;
+        cfg.ctx_window = train_context_window;
+        cfg.lr = train_lr;
+        cfg.optimizer = optimizer;
+        cfg.warmup = warmup_steps;
+        cfg.min_lr_ratio = min_lr_ratio;
+        cfg.weight_decay = weight_decay;
+        cfg.batch_size = batch_size;
+        cfg.grad_clip = grad_clip_norm;
+        cfg.report_every = report_every;
+        cfg.report_lr = report_lr;
+        cfg.report_grad = report_grad_norm;
+        cfg.save_config = save_config_path;
+        cfg.dry_run = dry_run;
+        cfg.strict_config = strict_config;
+        return cfg;
+    };
+
+    if (!save_config_path.empty()) {
+        EffectiveRunConfig cfg = build_effective_config();
+        write_effective_run_config_json(save_config_path, cfg);
+    }
+
+    if (dry_run) {
+        EffectiveRunConfig cfg = build_effective_config();
+        std::cout << effective_run_config_to_json_string(cfg);
+        return 0;
+    }
+
+    for (const std::string& w : config_warnings) {
+        std::cerr << "[config-warning] " << w << "\n";
+    }
+
+    std::string corpus = data_files.empty() ? default_corpus : load_dataset_from_files(data_files);
+
+    if (!build_vocab_out_path.empty()) {
+        std::vector<std::string> built = build_vocab_from_corpus_frequency(corpus, vocab_size_target);
+        write_vocab_file(build_vocab_out_path, built);
+        std::cout << "Wrote vocab file: " << build_vocab_out_path << " tokens=" << built.size() << "\n";
+        return 0;
+    }
+
+    std::unique_ptr<Tokenizer> tokenizer;
+    std::string tokenizer_mode = "char";
+    if (!vocab_path.empty()) {
+        std::vector<std::string> vocab_tokens = SubwordTokenizer::load_vocab_file(vocab_path);
+        tokenizer = std::make_unique<SubwordTokenizer>(vocab_tokens);
+        tokenizer_mode = "subword";
+    } else {
+        tokenizer = std::make_unique<CharTokenizer>(corpus);
+    }
+
+    Tokenizer& tok = *tokenizer;
     TinyTransformer model(tok.vocab_size(), 24, 48, 64, 1234, num_layers);
 
-    std::vector<int> train_ids = tok.encode(corpus);
-    float start_loss = model.evaluate_next_token_loss(train_ids, 24);
-    float end_loss = model.train_next_token(train_ids, 40, 24, 0.04f, 10);
+    bool resume_training = false;
+    if (!load_checkpoint_path.empty()) {
+        if (!model.load_checkpoint(load_checkpoint_path)) {
+            throw std::runtime_error("Failed to load checkpoint: " + load_checkpoint_path);
+        }
+        resume_training = true;
+    }
 
-    std::string prompt = "hello ";
+    std::vector<int> train_ids = tok.encode(corpus);
+    auto split = split_train_val_ids(train_ids, val_split);
+    const std::vector<int>& train_only_ids = split.first;
+    const std::vector<int>& val_only_ids = split.second;
+
+    float start_loss = model.evaluate_next_token_loss(train_only_ids, 24);
+    float end_loss = model.train_next_token(train_ids,
+                                            train_epochs,
+                                            train_context_window,
+                                            train_lr,
+                                            report_every,
+                                            optimizer,
+                                            warmup_steps,
+                                            min_lr_ratio,
+                                            weight_decay,
+                                            batch_size,
+                                            grad_clip_norm,
+                                            report_lr,
+                                            report_grad_norm,
+                                            val_split,
+                                            !val_only_ids.empty(),
+                                            resume_training);
+
+    if (!save_checkpoint_path.empty()) {
+        if (!model.save_checkpoint(save_checkpoint_path)) {
+            throw std::runtime_error("Failed to save checkpoint: " + save_checkpoint_path);
+        }
+    }
+
+    float val_loss = -1.0f;
+    float val_ppl = -1.0f;
+    if (val_only_ids.size() >= 2) {
+        val_loss = model.evaluate_next_token_loss(val_only_ids, 24);
+        val_ppl = std::exp(val_loss);
+    }
+
     std::vector<int> prompt_ids = tok.encode(prompt);
-    std::vector<int> greedy_ids = model.generate(prompt_ids, 80, 32, 0.0f, 1, 7);
-    std::vector<int> sampled_ids = model.generate(prompt_ids, 80, 32, 0.9f, 5, 7);
+    std::vector<int> greedy_ids = model.generate(prompt_ids, generation_steps, 32, 0.0f, 1, 7, 1.0f, 1.0f);
+    std::vector<int> sampled_ids = model.generate(prompt_ids,
+                                                  generation_steps,
+                                                  32,
+                                                  temperature,
+                                                  top_k,
+                                                  7,
+                                                  top_p,
+                                                  repetition_penalty);
 
     std::cout << "Tiny Transformer milestone (single-head, one-block)\n";
-    std::cout << "vocab_size=" << tok.vocab_size() << " d_model=24 heads=1 blocks=1\n";
-        std::cout << "Model has " << model.num_layers << " layer(s)\n";
+    std::cout << "tokenizer=" << tokenizer_mode << " vocab_size=" << tok.vocab_size() << " d_model=24 heads=1 blocks=1\n";
+    std::cout << "Model has " << model.num_layers << " layer(s)\n";
+    std::cout << "train_tokens=" << train_only_ids.size() << "";
+    if (!val_only_ids.empty()) {
+        std::cout << " val_tokens=" << val_only_ids.size();
+    }
+    std::cout << "\n";
     std::cout << "train_loss: start=" << start_loss << " end=" << end_loss << "\n";
+    if (val_ppl > 0.0f) {
+        std::cout << "val_loss=" << val_loss << " val_ppl=" << val_ppl << "\n";
+    }
     std::cout << "prompt:    " << prompt << "\n";
     std::cout << "greedy:    " << tok.decode(greedy_ids) << "\n";
     std::cout << "sampled:   " << tok.decode(sampled_ids) << "\n";

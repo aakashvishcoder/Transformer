@@ -441,6 +441,35 @@ int main() {
         std::remove(ckpt_path.c_str());
     });
 
+    runner.run("Resume training keeps optimizer state continuity", [] {
+        std::string corpus = "abcabcabcabcabcabcabcabcabcabc";
+        CharTokenizer tok(corpus);
+
+        TinyTransformer full(tok.vocab_size(), 8, 16, 16, 3030);
+        TinyTransformer split_a(tok.vocab_size(), 8, 16, 16, 3030);
+        TinyTransformer split_b(tok.vocab_size(), 8, 16, 16, 99);
+
+        std::vector<int> ids = tok.encode(corpus);
+        (void)full.train_next_token(ids, 12, 10, 0.03f, 0, "adamw", 0, 1.0f, 1e-4f, 2, 0.5f);
+
+        (void)split_a.train_next_token(ids, 6, 10, 0.03f, 0, "adamw", 0, 1.0f, 1e-4f, 2, 0.5f);
+        const std::string ckpt_path = "toy_llm_resume_state.bin";
+        assert(split_a.save_checkpoint(ckpt_path));
+
+        assert(split_b.load_checkpoint(ckpt_path));
+        (void)split_b.train_next_token(ids, 6, 10, 0.03f, 0, "adamw", 0, 1.0f, 1e-4f, 2, 0.5f, false, false, 0.0f, false, true);
+
+        std::vector<int> prompt = tok.encode("abc");
+        std::vector<float> logits_full = full.forward(prompt);
+        std::vector<float> logits_resumed = split_b.forward(prompt);
+        assert(logits_full.size() == logits_resumed.size());
+        for (size_t i = 0; i < logits_full.size(); ++i) {
+            assert(std::fabs(logits_full[i] - logits_resumed[i]) < 1e-5f);
+        }
+
+        std::remove(ckpt_path.c_str());
+    });
+
     runner.run("Next-token training reduces loss", [] {
         std::string corpus = "abababababababababababab";
         CharTokenizer tok(corpus);
@@ -500,6 +529,39 @@ int main() {
         assert(after > 0.0f);
     });
 
+    runner.run("Training supports validation split and val perplexity reporting", [] {
+        std::string corpus = "abcabcabcabcabcabcabcabc";
+        CharTokenizer tok(corpus);
+        TinyTransformer model(tok.vocab_size(), 8, 16, 16, 129);
+
+        std::vector<int> ids = tok.encode(corpus);
+        auto split = split_train_val_ids(ids, 0.25f);
+        assert(split.first.size() >= 2);
+        assert(split.second.size() >= 2);
+
+        float before = model.evaluate_next_token_loss(split.first, 8);
+        float after = model.train_next_token(ids,
+                                             8,
+                                             8,
+                                             0.03f,
+                                             1,
+                                             "adamw",
+                                             2,
+                                             0.2f,
+                                             1e-4f,
+                                             2,
+                                             0.5f,
+                                             true,
+                                             true,
+                                             0.25f,
+                                             true);
+        assert(after < before);
+
+        float val_loss = model.evaluate_next_token_loss(split.second, 8);
+        assert(std::isfinite(val_loss));
+        assert(std::exp(val_loss) > 0.0f);
+    });
+
     runner.run("Next-token training rejects invalid batch size", [] {
         std::string corpus = "abababababab";
         CharTokenizer tok(corpus);
@@ -530,6 +592,163 @@ int main() {
         std::vector<int> g1 = model.generate(prompt, 20, 8, 0.0f, 1, 1);
         std::vector<int> g2 = model.generate(prompt, 20, 8, 1.0f, 1, 999);
         assert(g1 == g2);
+    });
+
+    runner.run("Top-p and repetition-penalty generation path is stable", [] {
+        std::string corpus = "hello hello hello world world ";
+        CharTokenizer tok(corpus);
+        TinyTransformer model(tok.vocab_size(), 8, 16, 16, 707);
+        std::vector<int> ids = tok.encode(corpus);
+        (void)model.train_next_token(ids, 10, 8, 0.04f, 0);
+
+        std::vector<int> prompt = tok.encode("he");
+        std::vector<int> s1 = model.generate(prompt, 24, 8, 0.95f, 0, 99, 0.75f, 1.15f);
+        std::vector<int> s2 = model.generate(prompt, 24, 8, 0.95f, 0, 99, 0.75f, 1.15f);
+        assert(s1 == s2);
+        assert(s1.size() == prompt.size() + 24u);
+    });
+
+    runner.run("Vocab builder round-trip loads into subword tokenizer", [] {
+        std::string corpus = "hello world hello tiny world";
+        std::vector<std::string> vocab = build_vocab_from_corpus_frequency(corpus, 32);
+        assert(!vocab.empty());
+        assert(vocab[0] == "<unk>");
+
+        const std::string vocab_path = "toy_llm_vocab_builder_test.txt";
+        write_vocab_file(vocab_path, vocab);
+
+        std::vector<std::string> loaded = SubwordTokenizer::load_vocab_file(vocab_path);
+        assert(!loaded.empty());
+        SubwordTokenizer sub_tok(loaded);
+
+        std::vector<int> encoded = sub_tok.encode("hello world");
+        assert(!encoded.empty());
+        std::string decoded = sub_tok.decode(encoded);
+        assert(!decoded.empty());
+
+        std::remove(vocab_path.c_str());
+    });
+
+    runner.run("Run config JSON parser reads scalars and arrays", [] {
+        const std::string cfg_path = "toy_llm_run_config_test.json";
+        {
+            std::ofstream out(cfg_path);
+            out << "{\n";
+            out << "  \"num_layers\": 2,\n";
+            out << "  \"optimizer\": \"adamw\",\n";
+            out << "  \"report_lr\": true,\n";
+            out << "  \"lr\": 0.003,\n";
+            out << "  \"data\": [\"data.csv\", \"data.csv\"]\n";
+            out << "}\n";
+        }
+
+        RunConfigJson cfg = load_run_config_json(cfg_path);
+        assert(cfg.scalars.at("num_layers") == "2");
+        assert(cfg.scalars.at("optimizer") == "adamw");
+        assert(cfg.scalars.at("report_lr") == "true");
+        assert(cfg.scalars.at("lr") == "0.003");
+        assert(cfg.string_arrays.at("data").size() == 2u);
+        assert(cfg.string_arrays.at("data")[0] == "data.csv");
+
+        std::remove(cfg_path.c_str());
+    });
+
+    runner.run("Strict config validation rejects unknown keys", [] {
+        RunConfigJson ok_cfg;
+        ok_cfg.scalars["epochs"] = "2";
+        ok_cfg.string_arrays["data"] = {"data.csv"};
+        validate_run_config_keys(ok_cfg, true);
+
+        RunConfigJson bad_cfg;
+        bad_cfg.scalars["epochs"] = "2";
+        bad_cfg.scalars["optimzer"] = "adamw";
+        bool threw = false;
+        bool suggested = false;
+        try {
+            validate_run_config_keys(bad_cfg, true);
+        } catch (const std::runtime_error& e) {
+            threw = true;
+            std::string msg = e.what();
+            suggested = msg.find("optimizer") != std::string::npos;
+        }
+        assert(threw);
+        assert(suggested);
+    });
+
+    runner.run("Config key suggestion helper finds close key", [] {
+        std::vector<std::string> s1 = suggest_config_keys("temprature");
+        assert(!s1.empty());
+        assert(s1[0] == "temperature");
+        std::vector<std::string> s2 = suggest_config_keys("batc_size");
+        assert(!s2.empty());
+        assert(s2[0] == "batch_size");
+    });
+
+    runner.run("Config key suggestion helper can return multiple candidates", [] {
+        std::vector<std::string> s = suggest_config_keys("top", 3);
+        bool has_top_k = false;
+        bool has_top_p = false;
+        for (const std::string& x : s) {
+            if (x == "top_k") has_top_k = true;
+            if (x == "top_p") has_top_p = true;
+        }
+        assert(has_top_k);
+        assert(has_top_p);
+    });
+
+    runner.run("Non-strict config warning collector reports unknown keys", [] {
+        RunConfigJson cfg;
+        cfg.scalars["optimzer"] = "adamw";
+        cfg.scalars["epochs"] = "2";
+        cfg.string_arrays["data"] = {"data.csv"};
+        cfg.string_arrays["warnngs"] = {"x"};
+
+        std::vector<std::string> warnings = collect_non_strict_config_warnings(cfg);
+        assert(warnings.size() == 2u);
+        bool has_optimizer_hint = false;
+        bool has_warnngs_key_warning = false;
+        for (const std::string& w : warnings) {
+            if (w.find("optimizer") != std::string::npos) has_optimizer_hint = true;
+            if (w.find("warnngs") != std::string::npos) has_warnngs_key_warning = true;
+        }
+        assert(has_optimizer_hint);
+        assert(has_warnngs_key_warning);
+    });
+
+    runner.run("Effective config JSON writer round-trips key fields", [] {
+        EffectiveRunConfig cfg;
+        cfg.num_layers = 2;
+        cfg.data = {"data.csv", "data.csv"};
+        cfg.warnings = {"Unknown config key (ignored): optimzer. Did you mean 'optimizer'?"};
+        cfg.vocab = "vocab.txt";
+        cfg.prompt = "hello";
+        cfg.optimizer = "adamw";
+        cfg.epochs = 12;
+        cfg.lr = 0.003f;
+        cfg.report_lr = true;
+        cfg.report_grad = true;
+        cfg.save_config = "roundtrip.json";
+        cfg.dry_run = true;
+        cfg.strict_config = true;
+
+        const std::string out_path = "toy_llm_effective_config_test.json";
+        write_effective_run_config_json(out_path, cfg);
+        RunConfigJson loaded = load_run_config_json(out_path);
+
+        assert(loaded.scalars.at("num_layers") == "2");
+        assert(loaded.scalars.at("optimizer") == "adamw");
+        assert(loaded.scalars.at("epochs") == "12");
+        assert(loaded.scalars.at("report_lr") == "true");
+        assert(loaded.scalars.at("report_grad") == "true");
+        assert(loaded.scalars.at("dry_run") == "true");
+        assert(loaded.scalars.at("strict_config") == "true");
+        assert(loaded.scalars.at("save_config") == "roundtrip.json");
+        assert(loaded.string_arrays.at("data").size() == 2u);
+        assert(loaded.string_arrays.at("warnings").size() == 1u);
+        assert(loaded.string_arrays.at("warnings")[0].find("optimzer") != std::string::npos);
+        assert(std::fabs(std::stof(loaded.scalars.at("lr")) - 0.003f) < 1e-7f);
+
+        std::remove(out_path.c_str());
     });
 
     runner.run("Training with LayerNorm reduces loss", [] {

@@ -73,6 +73,123 @@ Run transformer-style generation demo:
 ./build-mingw/toy_llm.exe
 ```
 
+Run with external dataset file(s) (char tokenizer mode):
+
+```bash
+./build-mingw/toy_llm.exe --data data.csv --prompt "hello "
+```
+
+Run in subword mode with a vocab file (one token per line):
+
+```bash
+./build-mingw/toy_llm.exe --data data.csv --vocab vocab.txt --prompt "hello "
+```
+
+Build a starter vocab file from corpus frequency stats:
+
+```bash
+./build-mingw/toy_llm.exe --data data.csv --build-vocab vocab.txt --vocab-size 256
+```
+
+Run with validation split and sampling controls:
+
+```bash
+./build-mingw/toy_llm.exe --data data.csv --vocab vocab.txt --val-split 0.1 --top-p 0.9 --rep-penalty 1.1 --temperature 0.9 --top-k 20 --steps 120 --prompt "hello "
+```
+
+Save training checkpoint (includes optimizer state and scheduler step):
+
+```bash
+./build-mingw/toy_llm.exe --data data.csv --vocab vocab.txt --save-ckpt run.ckpt
+```
+
+Resume training from checkpoint:
+
+```bash
+./build-mingw/toy_llm.exe --data data.csv --vocab vocab.txt --resume run.ckpt --save-ckpt run.ckpt
+```
+
+Run with explicit training hyperparameters:
+
+```bash
+./build-mingw/toy_llm.exe --data data.csv --vocab vocab.txt --optimizer adamw --epochs 80 --ctx-window 32 --lr 0.003 --warmup 100 --min-lr-ratio 0.2 --weight-decay 0.0001 --batch-size 8 --grad-clip 1.0 --report-every 5 --report-lr --report-grad
+```
+
+Run from a JSON config file (CLI flags override config values):
+
+```bash
+./build-mingw/toy_llm.exe --config run.json --save-ckpt run.ckpt
+```
+
+Export the fully resolved effective config (after CLI overrides):
+
+```bash
+./build-mingw/toy_llm.exe --config run.json --epochs 120 --save-config effective-run.json
+```
+
+Dry-run to validate settings and print the resolved config without training:
+
+```bash
+./build-mingw/toy_llm.exe --config run.json --dry-run
+```
+
+Enable strict config validation (reject unknown JSON keys):
+
+```bash
+./build-mingw/toy_llm.exe --config run.json --strict-config --dry-run
+```
+
+Example `run.json`:
+
+```json
+{
+	"num_layers": 1,
+	"data": ["data.csv"],
+	"vocab": "vocab.txt",
+	"prompt": "hello ",
+	"epochs": 80,
+	"ctx_window": 32,
+	"lr": 0.003,
+	"optimizer": "adamw",
+	"warmup": 100,
+	"min_lr_ratio": 0.2,
+	"weight_decay": 0.0001,
+	"batch_size": 8,
+	"grad_clip": 1.0,
+	"report_every": 5,
+	"report_lr": true,
+	"report_grad": true,
+	"val_split": 0.1,
+	"temperature": 0.9,
+	"top_k": 20,
+	"top_p": 0.9,
+	"rep_penalty": 1.1,
+	"steps": 120,
+	"resume": "run.ckpt",
+	"save_ckpt": "run.ckpt",
+	"save_config": "effective-run.json",
+	"dry_run": false,
+	"strict_config": false
+}
+```
+
+Vocab file notes:
+- Put one token per line.
+- Optional special token `<unk>` can be included for unknown chunks.
+- Escapes `\\n`, `\\t`, `\\r`, and `\\s` are supported in vocab lines.
+
+Training notes:
+- `--val-split` reserves the tail of tokenized data for validation.
+- When validation data is present, the demo prints validation loss/perplexity.
+- `--resume` continues from stored optimizer moments and global step.
+- `--optimizer` supports `sgd` and `adamw`.
+- `--warmup` and `--min-lr-ratio` control warmup + cosine schedule.
+- `--config` accepts a flat JSON object with scalar fields and `data` string array.
+- `--save-config` writes the merged effective config for reproducible reruns.
+- `--dry-run` prints resolved settings and exits before dataset/tokenizer/training steps.
+- `--strict-config` fails fast on unknown config keys.
+- In non-strict mode, unknown config keys are ignored but emitted in a `warnings` array in dry-run/effective config output.
+
 The demo now includes a tiny next-token training loop and prints loss drop before generation.
 
 ## Project Layout
